@@ -145,3 +145,10 @@ Fresh image checks:
 - Live verification on the running stack: the kick-candidate clip returned 200 video/mp4 with exactly 8.000 s duration; the thumbnail returned 200 image/png with valid PNG magic. The `/full-match` page now serves the seek/clip timeline markup.
 - Streamlit showcase now auto-refreshes its live panel with `@st.fragment(run_every=...)` and stops refreshing once the job settles; each event expands to seek the annotated video to its start or play its clip.
 - Full protected suite: 238 passed, 5 environment-gated skips. Ruff, `git diff --check`, and `python3 tools/check_web_js.py` all clean.
+
+## Job history and deletion — 2026-08-18 (DeepSeek recovery session)
+
+- `JobStore.delete` implemented for both repositories; `DELETE /jobs/{id}` removes the job row and its derived artifacts (annotated video, `{id}.tracks.json`, event clips/thumbnails, and the `data/fullmatch/{id}` workspace) while preserving external/user-owned source files. Running/stopping jobs are rejected with 409.
+- Live verification against PostgreSQL: job history listed prior jobs; a throwaway job completed and was deleted (204), then `GET /jobs/{id}` returned 404 with the row gone from the list.
+- The Streamlit showcase gained a **Job history** sidebar to load or delete past jobs.
+- Full protected suite: 243 passed, 5 environment-gated skips; Ruff and `git diff --check` clean.

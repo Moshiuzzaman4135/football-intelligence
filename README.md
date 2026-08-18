@@ -33,6 +33,8 @@ Useful endpoints:
 - API docs: [http://localhost:8010/docs](http://localhost:8010/docs)
 - Health: [http://localhost:8010/health](http://localhost:8010/health)
 
+The Streamlit showcase has a **Job history** sidebar: load any previously processed job to re-watch its annotated video, events, and clips, or delete it (removes the job row plus its annotated video, tracks artifact, clips/thumbnails, and full-match workspace). `DELETE /jobs/{id}` is also available through the API.
+
 Stop the demo with:
 
 ```bash

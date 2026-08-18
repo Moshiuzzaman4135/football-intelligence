@@ -25,6 +25,7 @@ Stable after the single-host full-match MVP, the browser uploader/results page, 
 - Full-match MVP single-host runner with atomic manifest/resume, 120-second/5-second-overlap bounded chunks, manual Tesseract OCR, 32x18 screen-space heat map, non-overlap H.264 finalization/audio mux, and run/status/scoreboard/heat-map APIs.
 - Browser multipart uploader and results page (`GET /full-match`): self-contained HTML/JS that computes the file SHA-256 in the browser, transfers 16 MiB parts directly to MinIO via presigned URLs, starts the full-match runner, polls chunk progress, and renders annotated video, event timeline, scoreboard OCR, and heat map without buffering in Streamlit.
 - Event clips and live timeline: synchronous 8-second H.264/AAC clip and PNG thumbnail extraction from the annotated video (`GET /jobs/{id}/events/{eid}/clip` and `/thumbnail`), plus auto-refreshing Streamlit progress and click-to-seek/clip event timelines in both the Streamlit and `/full-match` UIs.
+- Job history and deletion: `JobStore.delete` on both repositories, `DELETE /jobs/{id}` (removes the job row plus annotated video, raw-track artifact, clips/thumbnails, and full-match workspace; preserves external sources; rejects running jobs), and a Streamlit sidebar to list, load, and delete past jobs.
 
 ## CURRENT WORK
 
