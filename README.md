@@ -6,14 +6,18 @@ The default image is deliberately credential-free and offline-capable. It uses a
 
 ## Demo in 5 Minutes
 
-Requirements: Docker, Docker Compose, and ports 8010/8510 available.
+Requirements: Docker, Docker Compose, and ports 8010/8510/9010/9011 available.
 
 ```bash
 git clone https://github.com/Moshiuzzaman4135/football-intelligence.git
 cd football-intelligence
+cp .env.example .env
+# Replace every replace-with-... value in .env; never commit this file.
 export FOOTBALL_UID="$(id -u)" FOOTBALL_GID="$(id -g)"
 docker compose up --build -d
-docker compose run --rm --no-deps -v "$PWD:/app" backend \
+docker compose run --rm --no-deps \
+  -e FOOTBALL_OBJECT_STORE_BACKEND=filesystem -e FOOTBALL_DATABASE_URL= \
+  -v "$PWD:/app" backend \
   python -m football_intelligence.demo_fixture \
   /app/data/uploads/synthetic-football-demo.mp4
 ```
@@ -43,6 +47,10 @@ docker compose run --rm --no-deps -v "$PWD:/app" backend \
 ```
 
 Generated uploads, SQLite metadata, outputs, weights, and downloaded fixtures are ignored by Git. See `docs/DEMO.md` for the narrated walkthrough and `docs/MODELS.md` for the optional GPU/YOLO command.
+
+## Current capability boundary
+
+The short-video UI flow is usable end to end. The backend also supports durable resumable full-match upload to MinIO and creates a job only after validation. Processing that `s3://` full-match job, scoreboard OCR, heat maps, and robust goal/free-kick spotting are the next implementation milestone; see `docs/DEEPSEEK_HANDOFF.md`.
 
 ## What this prototype does not claim
 

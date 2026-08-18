@@ -6,7 +6,7 @@ The mandatory M0-M8 vertical slice is implemented and has run both through the C
 
 ## CURRENT MILESTONE
 
-Full-match production expansion Task 3 is complete: object storage and resumable multipart upload. The published M0-M8 vertical slice remains the protected regression baseline.
+Stable handoff after full-match Task 3. The working short-clip M0-M8 showcase and durable full-match upload/control-plane foundation are complete. The 90-minute analysis runner remains the next milestone.
 
 ## COMPLETED MILESTONES
 
@@ -33,7 +33,7 @@ Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch
 
 ## NEXT EXACT ACTION
 
-Begin Task 4 by writing failing orchestration tests for idempotent Celery delivery, proxy generation, restartable chunks, lease recovery, and cancellation.
+Read `docs/DEEPSEEK_HANDOFF.md`, then implement `.superpowers/sdd/2026-08-18-full-match-production/mvp-runner-brief.md`: single-host S3 localization, validated proxy, atomic manifest, restartable 120-second chunks, manual-ROI Tesseract OCR, screen-space heat map, candidate fusion, annotated output, and a minimal browser uploader/results page. Do not begin with Celery or React.
 
 ## FILES MODIFIED
 
@@ -83,7 +83,7 @@ The core image defaults to a synthetic/degraded color detector. YOLO is optional
 
 ## BLOCKERS
 
-None for the mandatory vertical slice. The final independent targeted review reports no Critical or Important issues and a `Ready to merge: Yes` verdict.
+None for the stable short-clip showcase or durable multipart upload foundation. The full-match analysis features are incomplete work, not an external blocker.
 
 ## PUBLICATION
 

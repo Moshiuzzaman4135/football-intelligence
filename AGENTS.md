@@ -31,6 +31,7 @@ docs/EXECUTION_PLAN.md
 docs/IMPLEMENTATION_STATUS.md
 docs/DECISIONS.md
 docs/TEST_RESULTS.md
+docs/DEEPSEEK_HANDOFF.md
 ```
 
 Resume from `NEXT EXACT ACTION` in `docs/IMPLEMENTATION_STATUS.md`. Before claiming something works: RUN IT and record the exact command and result.

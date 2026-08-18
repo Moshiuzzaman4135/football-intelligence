@@ -3,8 +3,12 @@
 ## DEMO STARTUP
 
 ```bash
+cp .env.example .env
+# Replace every replace-with-... value in .env. Never commit .env.
 docker compose up --build -d
-docker compose run --rm --no-deps -v "$PWD:/app" backend \
+docker compose run --rm --no-deps \
+  -e FOOTBALL_OBJECT_STORE_BACKEND=filesystem -e FOOTBALL_DATABASE_URL= \
+  -v "$PWD:/app" backend \
   python -m football_intelligence.demo_fixture \
   /app/data/uploads/synthetic-football-demo.mp4
 ```
@@ -39,3 +43,13 @@ The selected real clip is not expected to produce an event with current heuristi
 - IoU visual tracking is not ByteTrack and can switch IDs during occlusion/camera motion.
 - Team clustering, pitch/radar coordinates, RTSP, action spotting, OCR/audio/VLM evidence, and websocket updates are deferred.
 - Event types are reviewable candidates, not Opta-level assertions.
+- Durable full-match multipart upload is implemented, but processing its `s3://` job, scoreboard OCR, heat maps, and robust goal/free-kick spotting are not yet implemented.
+
+## WHAT CAN BE TESTED NOW
+
+1. Run the short generated fixture through Streamlit and verify progress, visual tracking IDs, the kick candidate/evidence, and annotated-video playback.
+2. Use FastAPI `/docs` to test jobs, status, stop, events, compact tracks, and the annotated-video endpoint.
+3. Use `/uploads` plus the presign/status/complete/abort endpoints to test restart-safe MinIO multipart upload. Each presign response supplies the exact length and SHA-256 headers required for the direct PUT.
+4. Run `pytest -q`: the stable checkpoint has 148 passing tests; live MinIO and Docker-host Compose tests are environment-gated.
+
+Do not expect a completed MinIO full-match upload to process yet. Continue from `docs/DEEPSEEK_HANDOFF.md`.
