@@ -63,3 +63,17 @@ Finalization is one SQLite transaction that either completes a still-running job
 ## 2026-08-18: direct multipart transfer with validation before job creation
 
 Full-match media uses opaque S3 keys and 16 MiB multipart parts. FastAPI returns presigned URLs, required signed length/checksum headers, and part/status metadata but never proxies part bodies. Completion intent and a preallocated job ID are persisted before irreversible S3 completion. Missing multipart acknowledgements recover by probing and streaming the completed object; deterministic job insertion makes database acknowledgement loss replay-safe. Upload state uses versioned SQL compare-and-set transitions, while short per-upload locks avoid blocking unrelated validation streams. Compose uses separate internal and browser-visible MinIO endpoints and separate root/application credentials. The original short-clip filesystem endpoint remains unchanged until the web migration is complete.
+
+## 2026-08-18: model candidates stay behind legal and quality gates
+
+Keep CALF's 17-action ONNX conversion as the main action-spotting qualification target. AdaSpot-small is an optional MIT benchmark, not the default: its released SoccerNet Ball model covers ten actions and omits goal/free-kick, and its preprocessing/export path needs parity fixes. T-DEED is excluded from the default distributable because its repository is GPL-3.0 and its Drive checkpoints have no separate license.
+
+PnLCalib is the strongest reviewed calibration candidate but remains a process-isolated benchmark pending GPL-2.0 and weight-term approval plus RTX 3080 measurements. No Bells Just Whistles is its superseded baseline. Broadcast2Pitch and SoccerNet Game State are useful interface/evaluation references but are not runtime dependencies because of licensing, weight-manifest, dependency, and restartability gaps.
+
+## 2026-08-18: Tesseract OCR for the fast MVP
+
+Use Tesseract 5 with the official Apache-2.0 `tessdata_fast` English model behind `OcrEngine`. A manual scoreboard ROI sampled at 1 FPS is smaller, more reproducible, and leaves GPU capacity for detection. OCR failures produce unknown observations; stable score changes are candidates and never confirm goals by themselves. PaddleOCR and RapidOCR remain later benchmarks after dependency and model-license review.
+
+## 2026-08-18: single-host MVP before enterprise deployment
+
+Deliver a restartable atomic-manifest chunk runner and a minimal FastAPI-served multipart/results page before Celery, React, Caddy, and production authentication. This produces an actually usable full-match path quickly while preserving adapter boundaries for the original production plan. Initial heat maps are explicitly screen-space density, not calibrated tactical coordinates.

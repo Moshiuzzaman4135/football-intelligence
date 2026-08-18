@@ -20,10 +20,17 @@ Verify source, license, weights, classes/events, Python compatibility, VRAM, and
 | [SoccerNet NetVLAD++](https://github.com/SoccerNet/sn-spotting/tree/main/Benchmarks/TemporallyAwarePooling) | 17-class code; claimed five models but public checkpoint files/download were not verified | Apache-2.0 benchmark; legacy Python 3.8/PyTorch 1.6 | Source reports <2 GB for training over features | Reproducible fallback only after training or documented weights |
 | [VideoMAE](https://github.com/MCG-NJU/VideoMAE) | Generic checkpoints, no official SoccerNet 17-event checkpoint verified | Mostly CC-BY-NC-4.0 | 4 GB constrained; 10 GB inference experiments plausible | Research/fine-tuning only, not vertical slice |
 | [recokick ball-action spotting](https://github.com/recokick/ball-action-spotting) | Drive-linked weights; 12 dense ball actions; tuned for RTX 3080 | MIT repo; NVIDIA video stack, Python unspecified | 3080 is documented target | Strong later 3080 experiment after M0-M8 |
+| [T-DEED](https://github.com/arturxe2/T-DEED) | Released 17-class SoccerNet and ball-action checkpoints; single-video inference | GPL-3.0 repo; Drive weights have no separate license; isolated Torch 2.3/NumPy 1 stack | Published small model 12.31M params/39.58 GFLOPs per 100 frames; no wall-clock/VRAM result | Do not ship; private benchmark only after explicit license acceptance |
+| [AdaSpot](https://github.com/arturxe2/AdaSpot) | MIT Hugging Face checkpoints; ten released ball-action classes; single-video path needs preprocessing fixes | MIT code/weights; dynamic ROI makes ONNX export harder | Paper reports 1.97 GB for one clip; no full-match runtime | Optional small-model benchmark; cannot supply goal/free-kick evidence |
+| [PnLCalib](https://github.com/mguti97/PnLCalib) | SoccerNet-trained keypoint/line weights and nonlinear point-line refinement | GPL-2.0; released weights lack separate terms/checksums; Python 3.9/Torch 2.3 environment | Two ~265 MB checkpoints; official VRAM/FPS absent | Process-isolated benchmark only after legal approval and quality/runtime measurement |
+| [Broadcast2Pitch](https://github.com/yinmayoo185/SoccernetGSR) | Full detection/tracking/ReID/calibration/jersey pipeline and Google Drive weights | No root license or weight manifest; source-build/GPU-heavy stack | No published end-to-end runtime/VRAM | Reference its interfaces/evaluation only; do not copy or distribute |
+| [Tesseract 5 + tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) | English OCR model for manual scoreboard crops; score/clock TSV confidence | Apache-2.0 engine and model; native CPU process | Small model (~4.1 MB), CPU at 1 FPS ROI | MVP OCR adapter; validate broadcaster-specific accuracy |
 
 ## Event coverage notes
 
 SoccerNet-v2 covers 17 broadcast events including goals, shots on/off target, fouls, corners, cards, substitutions, offside, and restarts. The recokick task is separate and covers 12 dense ball actions including pass, drive, header, high pass, cross, shot, tackle, free kick, and goal. Neither consumes our YOLO tracks directly; feature extraction and domain validation are separate work.
+
+AdaSpot's released model intentionally has only ten ball-action classes and excludes the sparse goal/free-kick classes, so it cannot replace the 17-event candidate. T-DEED is technically closer but fails the default distribution-license gate. PnLCalib and Broadcast2Pitch were inspected as calibration/game-state candidates, not event models.
 
 ## Licensing decision
 

@@ -23,6 +23,15 @@
 - Do not promote a model without source, version, license, checksum, classes, runtime, device, benchmark, and limitations.
 - Production claims require the acceptance measurements in the spec.
 
+## 2026-08-18 MVP delivery override
+
+The user prioritized a usable MVP before the remaining enterprise work. After Task 3, execute these two bounded tasks before returning to the original Tasks 4-10:
+
+1. **Single-host full-match runner:** stream the completed MinIO source to an atomic local file, validate/proxy it with FFmpeg, process restartable 120-second chunks, sample detection/tracking at a bounded rate, run manual-ROI Tesseract OCR at 1 FPS, emit conservative score-change and existing kick candidates, accumulate bounded screen-space heat maps, render/concatenate annotated chunks with audio, and resume from an atomic manifest. Raw full-match observations stay out of SQL.
+2. **Usable browser MVP:** serve a minimal JavaScript multipart uploader/results page from FastAPI. It hashes/uploads 16 MiB slices without whole-file buffering, resumes from durable upload state, starts/resumes the runner, shows chunk progress, score/clock observations, candidate events, heat map, and a direct byte-range video URL. Streamlit remains only for the short-clip demo.
+
+Celery, React, automatic OCR-region discovery, calibrated pitch coordinates, enterprise authentication/Caddy, and production scaling remain follow-up work. This override does not weaken truthfulness, media integrity, licensing, or restartability requirements.
+
 ---
 
 ### Task 1: Full-match domain contracts and chunk planning
