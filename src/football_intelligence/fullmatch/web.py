@@ -32,6 +32,7 @@ ENDPOINTS: dict[str, str] = {
     "eventClip": "/jobs/{job_id}/events/{event_id}/clip",
     "eventThumbnail": "/jobs/{job_id}/events/{event_id}/thumbnail",
     "scoreboard": "/jobs/{job_id}/scoreboard",
+    "fullMatchDebug": "/jobs/{job_id}/full-match/debug",
     "heatMap": "/jobs/{job_id}/heat-map",
     "annotatedVideo": "/jobs/{job_id}/annotated-video",
     "stopJob": "/jobs/{job_id}/stop",
@@ -383,6 +384,7 @@ def _app_js() -> str:
       byId('stop-btn').disabled = true;
       if (job.status === 'completed') {
         await renderResults();
+        await renderDebug();
       }
       log('job ' + job.status + ' (' + (job.progress || 0) + '%)');
     }
@@ -504,6 +506,63 @@ def _app_js() -> str:
     byId('results-panel').style.display = 'block';
   }
 
+  async function renderDebug() {
+    var debugPanel = byId('debug-panel');
+    if (!debugPanel) return;
+    var debugResponse = await callApi(apiPath(EP.fullMatchDebug, { job_id: state.jobId }), {});
+    var debugData = await debugResponse.json();
+    var html = '';
+    html += '<h3>Debug surface (raw evidence, not the semantic timeline)</h3>';
+    html += '<p>peak observations: ' + (debugData.peak_observations || 0) +
+      ' &middot; ROI: ' + JSON.stringify(debugData.options.scoreboard_region || {}) +
+      ' &middot; detector: ' + (debugData.options.provenance ? debugData.options.provenance.detector : 'n/a') +
+      '</p>';
+    var chunks = debugData.chunks || [];
+    for (var c = 0; c < chunks.length; c++) {
+      var chunk = chunks[c];
+      html += '<details><summary>chunk ' + chunk.index + ' [' + chunk.status + '] ' +
+        (chunk.output_start_ms / 1000).toFixed(0) + 's-' + (chunk.end_ms / 1000).toFixed(0) +
+        's &middot; peak obs ' + chunk.peak_observations + ' &middot; OCR reads ' +
+        (chunk.raw_ocr_evidence || []).length + ' &middot; accepted ' +
+        (chunk.scoreboard || []).length + '</summary>';
+      var consensus = chunk.consensus_state;
+      if (consensus) {
+        html += '<p>consensus: accepted ' + (consensus.accepted_score ? consensus.accepted_score.join('-') : 'none') +
+          ' &middot; pending ' + (consensus.pending_score ? consensus.pending_score.join('-') : 'none') +
+          ' &middot; teams ' + escapeHtml(String(consensus.home_team)) + '/' + escapeHtml(String(consensus.away_team)) +
+          ' &middot; clock ' + (consensus.last_clock_ms != null ? (consensus.last_clock_ms / 1000).toFixed(0) + 's' : 'n/a') +
+          ' &middot; pending misses ' + (consensus.pending_misses || 0) + '</p>';
+      }
+      var ocrRows = '';
+      var reads = chunk.raw_ocr_evidence || [];
+      var limit = Math.min(reads.length, 30);
+      for (var r = 0; r < limit; r++) {
+        var read = reads[r];
+        ocrRows += '<tr><td>' + (read.timestamp_ms / 1000).toFixed(1) + 's</td><td>' +
+          Math.round((read.raw_confidence || 0) * 100) + '%</td><td class="debug-ocr">' +
+          escapeHtml(read.raw_text || '') + '</td></tr>';
+      }
+      if (reads.length > limit) {
+        ocrRows += '<tr><td colspan="3">... ' + (reads.length - limit) + ' more raw reads (see API)</td></tr>';
+      }
+      html += '<table><thead><tr><th>t</th><th>conf</th><th>raw OCR text</th></tr></thead><tbody>' +
+        (ocrRows || '<tr><td colspan="3">no raw OCR reads</td></tr>') + '</tbody></table>';
+      var evRows = '';
+      var chunkEvents = chunk.events || [];
+      for (var e = 0; e < chunkEvents.length; e++) {
+        var ev = chunkEvents[e];
+        evRows += '<tr><td>' + (ev.start_ms / 1000).toFixed(1) + 's</td><td>' +
+          escapeHtml(ev.event_type) + '</td><td>' + Math.round(ev.confidence * 100) +
+          '%</td><td>' + escapeHtml((ev.source || []).join(',')) + '</td></tr>';
+      }
+      html += '<table><thead><tr><th>t</th><th>event</th><th>conf</th><th>source</th></tr></thead><tbody>' +
+        (evRows || '<tr><td colspan="4">no chunk events</td></tr>') + '</tbody></table>';
+      html += '</details>';
+    }
+    debugPanel.innerHTML = html;
+    debugPanel.style.display = 'block';
+  }
+
   async function stopJob() {
     if (!state.jobId) return;
     try {
@@ -523,6 +582,7 @@ def _app_js() -> str:
     byId('results-panel').style.display = 'none';
     byId('events-panel').style.display = 'none';
     byId('scoreboard-panel').style.display = 'none';
+    byId('debug-panel').style.display = 'none';
     byId('chunks').innerHTML = '';
     byId('events-body').innerHTML = '';
     byId('scoreboard-body').innerHTML = '';
@@ -621,6 +681,12 @@ _PAGE_TEMPLATE = """<!doctype html>
   .event-thumb { width: 96px; height: auto; border-radius: 4px; display: block; }
   .mini-btn { padding: 3px 8px; border-radius: 4px; border: 1px solid #3a3f47; background: #24282f; color: #e8eaed; cursor: pointer; font-size: 0.78rem; }
   .mini-btn:hover { background: #2f6fdb; }
+  #debug-panel { font-size: 0.8rem; }
+  #debug-panel details { margin: 6px 0; border: 1px solid #2a2f37; border-radius: 6px; padding: 6px 10px; background: #171a1f; }
+  #debug-panel summary { cursor: pointer; font-weight: 600; }
+  #debug-panel table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  #debug-panel td, #debug-panel th { border: 1px solid #2a2f37; padding: 3px 6px; text-align: left; }
+  .debug-ocr { word-break: break-all; max-width: 60ch; }
   .clip-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 10; }
   .clip-modal-card { background: #1c1f25; border: 1px solid #3a3f47; border-radius: 8px; padding: 12px; max-width: 90vw; }
   .clip-modal-card video { max-width: 80vw; max-height: 80vh; border-radius: 6px; display: block; margin-top: 8px; }
@@ -683,6 +749,7 @@ _PAGE_TEMPLATE = """<!doctype html>
       <tbody id="scoreboard-body"></tbody>
     </table>
   </div>
+  <div class="card hidden" id="debug-panel"></div>
 
   <script id="fm-endpoints" type="application/json">__FM_ENDPOINTS__</script>
   <div id="clip-modal" class="clip-modal" style="display:none">

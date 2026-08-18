@@ -488,6 +488,48 @@ def create_app(
             raise HTTPException(status_code=409, detail="scoreboard is not ready") from None
         return [observation.model_dump(mode="json") for observation in observations]
 
+    @application.get("/jobs/{job_id}/full-match/debug")
+    def full_match_debug(job_id: str) -> dict[str, Any]:
+        """Debug surface: raw OCR reads, consensus state, observations, provenance."""
+        get_job(job_id)
+        try:
+            manifest = get_full_match_runner().status(job_id)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=409, detail="full-match processing has not started"
+            ) from None
+        chunks: list[dict[str, Any]] = []
+        for chunk in manifest.chunks:
+            chunks.append(
+                {
+                    "index": chunk.index,
+                    "status": chunk.status,
+                    "context_start_ms": chunk.context_start_ms,
+                    "output_start_ms": chunk.output_start_ms,
+                    "end_ms": chunk.end_ms,
+                    "peak_observations": chunk.peak_observations,
+                    "raw_ocr_evidence": [
+                        item.model_dump(mode="json")
+                        for item in chunk.raw_ocr_evidence
+                    ],
+                    "scoreboard": [
+                        item.model_dump(mode="json") for item in chunk.scoreboard
+                    ],
+                    "consensus_state": (
+                        chunk.consensus_state.model_dump(mode="json")
+                        if chunk.consensus_state is not None
+                        else None
+                    ),
+                    "events": [item.model_dump(mode="json") for item in chunk.events],
+                }
+            )
+        return {
+            "job_id": job_id,
+            "chunks": chunks,
+            "peak_observations": manifest.peak_observations,
+            "options": manifest.options.model_dump(mode="json"),
+        }
+
     @application.get("/jobs/{job_id}/heat-map", response_class=FileResponse)
     def full_match_heat_map(job_id: str) -> FileResponse:
         get_job(job_id)

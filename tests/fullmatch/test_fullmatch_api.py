@@ -108,6 +108,7 @@ def test_full_match_read_apis_and_annotated_video_range(tmp_path: Path):
     with TestClient(app) as client:
         status = client.get(f"/jobs/{job.id}/full-match/status")
         scoreboard = client.get(f"/jobs/{job.id}/scoreboard")
+        debug = client.get(f"/jobs/{job.id}/full-match/debug")
         heat_map = client.get(f"/jobs/{job.id}/heat-map")
         video = client.get(
             f"/jobs/{job.id}/annotated-video", headers={"Range": "bytes=2-5"}
@@ -118,6 +119,11 @@ def test_full_match_read_apis_and_annotated_video_range(tmp_path: Path):
     assert status.json()["job_status"] == "completed"
     assert status.json()["manifest"]["job_id"] == job.id
     assert scoreboard.json() == []
+    assert debug.status_code == 200
+    assert debug.json()["job_id"] == job.id
+    assert "chunks" in debug.json()
+    assert "peak_observations" in debug.json()
+    assert "options" in debug.json()
     assert heat_map.status_code == 200
     assert video.status_code == 206
     assert video.content == b"2345"

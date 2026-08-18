@@ -180,3 +180,10 @@ Fresh image checks:
 - New focused coverage: `tests/test_action.py` (8 passed) — known->FootballEvent mapping, unknown label safely ignored, full 17-action taxonomy, evidence/confidence retention, timestamp mapping, NMS dedup, unknown-class drop. `tests/test_events.py` grew fusion/timeline tests: goal+score change => strong goal (needs_review false, both sources); goal-only stays reviewable; score-change-only stays `score_change_candidate`; `semantic_events`/`debug_events` split hides kick spam while preserving it.
 - OCR regression tests now 11 passing in `tests/fullmatch/test_ocr.py` (bounded miss does not reset; too many misses abandon; team-token miss keeps known teams; score regression rejected; 5 s window emits one candidate).
 - Full protected suite: **288 passed, 5 skipped** (3 node-required JS, 1 Docker-CLI, 1 live MinIO), 1 known Starlette warning. `ruff check .` clean, `git diff --check` clean.
+
+## Full-match debug surface — 2026-08-18 (DeepSeek session)
+
+- Added `GET /jobs/{id}/full-match/debug` returning per-chunk `raw_ocr_evidence`, `consensus_state`, `scoreboard`, `events`, `peak_observations`, plus manifest `peak_observations` and `options` (ROI, detector provenance). Verified live against the completed Community-Shield job: returns 2 chunks, peak obs 428.
+- Added a debug panel to the `/full-match` page showing raw OCR reads (t, confidence, raw text), consensus state (accepted/pending score, teams, clock, pending misses), and per-chunk events with sources.
+- Updated `.env` scoreboard ROI to the real top-left overlay (`0,0,0.30,0.16`) and added a conservative playing-area polygon — local-only (gitignored). Honest boundary: static polygon is a fallback; moving-camera calibration is the GPU follow-up.
+- Focused coverage: `tests/fullmatch/test_fullmatch_api.py` asserts the debug endpoint returns `{job_id, chunks, peak_observations, options}`. Full protected suite: 288 passed, 5 skipped. `ruff check .` clean.
