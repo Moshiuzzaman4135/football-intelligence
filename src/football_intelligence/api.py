@@ -15,8 +15,15 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from football_intelligence.bus import EventBus
+from football_intelligence.clips import build_event_clip, build_event_thumbnail
 from football_intelligence.detection.factory import build_detector
-from football_intelligence.domain import JobRecord, JobStatus, ScoreboardRegion, UploadSession
+from football_intelligence.domain import (
+    FootballEvent,
+    JobRecord,
+    JobStatus,
+    ScoreboardRegion,
+    UploadSession,
+)
 from football_intelligence.fullmatch.manifest import RunnerOptions
 from football_intelligence.fullmatch.ocr import TesseractCliOcrEngine
 from football_intelligence.fullmatch.runner import FullMatchRunner
@@ -512,6 +519,46 @@ def create_app(
             job.output_path,
             media_type="video/mp4",
             filename=f"{job_id}.annotated.mp4",
+        )
+
+    def find_event(job_id: str, event_id: str) -> FootballEvent:
+        for event in repository.get_events(job_id):
+            if event.id == event_id:
+                return event
+        raise HTTPException(status_code=404, detail="event not found")
+
+    @application.get(
+        "/jobs/{job_id}/events/{event_id}/clip", response_class=FileResponse
+    )
+    def event_clip(job_id: str, event_id: str) -> FileResponse:
+        job = get_job(job_id)
+        event = find_event(job_id, event_id)
+        if not job.output_path or not Path(job.output_path).is_file():
+            raise HTTPException(status_code=409, detail="annotated video is not ready")
+        clip_dir = root / "clips"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        clip_path = clip_dir / f"{event_id}.mp4"
+        if not clip_path.is_file():
+            build_event_clip(Path(job.output_path), clip_path, start_ms=event.start_ms)
+        return FileResponse(
+            clip_path, media_type="video/mp4", filename=f"{event_id}.clip.mp4"
+        )
+
+    @application.get(
+        "/jobs/{job_id}/events/{event_id}/thumbnail", response_class=FileResponse
+    )
+    def event_thumbnail(job_id: str, event_id: str) -> FileResponse:
+        job = get_job(job_id)
+        event = find_event(job_id, event_id)
+        if not job.output_path or not Path(job.output_path).is_file():
+            raise HTTPException(status_code=409, detail="annotated video is not ready")
+        thumb_dir = root / "clips"
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        thumb_path = thumb_dir / f"{event_id}.png"
+        if not thumb_path.is_file():
+            build_event_thumbnail(Path(job.output_path), thumb_path, at_ms=event.start_ms)
+        return FileResponse(
+            thumb_path, media_type="image/png", filename=f"{event_id}.thumb.png"
         )
 
     return application

@@ -29,6 +29,8 @@ ENDPOINTS: dict[str, str] = {
     "fullMatchStatus": "/jobs/{job_id}/full-match/status",
     "jobStatus": "/jobs/{job_id}/status",
     "events": "/jobs/{job_id}/events",
+    "eventClip": "/jobs/{job_id}/events/{event_id}/clip",
+    "eventThumbnail": "/jobs/{job_id}/events/{event_id}/thumbnail",
     "scoreboard": "/jobs/{job_id}/scoreboard",
     "heatMap": "/jobs/{job_id}/heat-map",
     "annotatedVideo": "/jobs/{job_id}/annotated-video",
@@ -407,14 +409,71 @@ def _app_js() -> str:
           return escapeHtml(item.kind + '=' + item.value + ' (' + Math.round((item.confidence || 0) * 100) + '%)');
         }).join(', ');
       }
-      rows += '<tr><td>' + start + 's-' + end + 's</td><td>' + escapeHtml(event.event_type) +
+      var thumbUrl = apiPath(EP.eventThumbnail, { job_id: state.jobId, event_id: event.id });
+      var clipUrl = apiPath(EP.eventClip, { job_id: state.jobId, event_id: event.id });
+      rows += '<tr class="event-row" data-start="' + (event.start_ms / 1000) + '" data-event-id="' +
+        escapeHtml(event.id) + '">' +
+        '<td><img class="event-thumb" src="' + thumbUrl + '" loading="lazy" alt="event frame"></td>' +
+        '<td>' + start + 's-' + end + 's</td><td>' + escapeHtml(event.event_type) +
         '</td><td>' + Math.round(event.confidence * 100) + '%</td><td>' +
         escapeHtml(event.needs_review ? 'review' : 'auto') + '</td><td>' +
-        (event.source || []).join(', ') + '</td><td>' + evidence + '</td></tr>';
+        (event.source || []).join(', ') + '</td><td>' + evidence + '</td>' +
+        '<td><button class="mini-btn seek-btn">\u25B6 seek</button> ' +
+        '<button class="mini-btn clip-btn">clip</button></td></tr>';
     }
-    byId('events-body').innerHTML = rows || '<tr><td colspan="6">no events</td></tr>';
+    byId('events-body').innerHTML = rows || '<tr><td colspan="8">no events</td></tr>';
     byId('events-panel').style.display = 'block';
+    attachEventHandlers(events);
+    renderScoreboard();
+  }
 
+  function attachEventHandlers(events) {
+    var rows = document.querySelectorAll('#events-body .event-row');
+    for (var i = 0; i < rows.length; i++) {
+      (function (row, event) {
+        row.addEventListener('click', function (evt) {
+          if (evt.target.classList.contains('clip-btn')) {
+            openClip(apiPath(EP.eventClip, { job_id: state.jobId, event_id: event.id }));
+            return;
+          }
+          if (evt.target.classList.contains('seek-btn')) {
+            seekVideo(event.start_ms);
+            return;
+          }
+          seekVideo(event.start_ms);
+        });
+      })(rows[i], events[i]);
+    }
+  }
+
+  function seekVideo(startMs) {
+    var video = byId('video');
+    if (!video) return;
+    var seconds = Math.max(0, startMs / 1000);
+    try {
+      video.currentTime = seconds;
+      video.play();
+    } catch (_) { /* seek may fail before metadata loads */ }
+  }
+
+  function openClip(url) {
+    var modal = byId('clip-modal');
+    var clipVideo = byId('clip-video');
+    clipVideo.src = url;
+    modal.style.display = 'flex';
+    clipVideo.play();
+  }
+
+  function closeClip() {
+    var modal = byId('clip-modal');
+    var clipVideo = byId('clip-video');
+    clipVideo.pause();
+    clipVideo.removeAttribute('src');
+    clipVideo.load();
+    modal.style.display = 'none';
+  }
+
+  async function renderScoreboard() {
     var scoreResponse = await callApi(apiPath(EP.scoreboard, { job_id: state.jobId }), {});
     var observations = await scoreResponse.json();
     var scoreRows = '';
@@ -487,6 +546,10 @@ def _app_js() -> str:
       }
     });
     byId('stop-btn').addEventListener('click', stopJob);
+    byId('clip-close').addEventListener('click', closeClip);
+    byId('clip-modal').addEventListener('click', function (evt) {
+      if (evt.target === byId('clip-modal')) closeClip();
+    });
     byId('file-input').addEventListener('change', function () {
       var file = byId('file-input').files[0];
       if (!file) return;
@@ -540,6 +603,14 @@ _PAGE_TEMPLATE = """<!doctype html>
   .chunk-bar > div { height: 100%; background: #2f9d6b; width: 0; }
   .chunk-status { width: 80px; text-transform: uppercase; font-size: 0.7rem; color: #b6bac1; }
   .hidden { display: none; }
+  .event-row { cursor: pointer; }
+  .event-row:hover { background: #24282f; }
+  .event-thumb { width: 96px; height: auto; border-radius: 4px; display: block; }
+  .mini-btn { padding: 3px 8px; border-radius: 4px; border: 1px solid #3a3f47; background: #24282f; color: #e8eaed; cursor: pointer; font-size: 0.78rem; }
+  .mini-btn:hover { background: #2f6fdb; }
+  .clip-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 10; }
+  .clip-modal-card { background: #1c1f25; border: 1px solid #3a3f47; border-radius: 8px; padding: 12px; max-width: 90vw; }
+  .clip-modal-card video { max-width: 80vw; max-height: 80vh; border-radius: 6px; display: block; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -585,9 +656,9 @@ _PAGE_TEMPLATE = """<!doctype html>
     <img id="heatmap" alt="heat map">
   </div>
   <div class="card hidden" id="events-panel">
-    <h3>Event timeline</h3>
+    <h3>Event timeline (click a row to seek the video)</h3>
     <table>
-      <thead><tr><th>Time</th><th>Type</th><th>Confidence</th><th>Review</th><th>Source</th><th>Evidence</th></tr></thead>
+      <thead><tr><th>Frame</th><th>Time</th><th>Type</th><th>Confidence</th><th>Review</th><th>Source</th><th>Evidence</th><th>Actions</th></tr></thead>
       <tbody id="events-body"></tbody>
     </table>
   </div>
@@ -600,6 +671,12 @@ _PAGE_TEMPLATE = """<!doctype html>
   </div>
 
   <script id="fm-endpoints" type="application/json">__FM_ENDPOINTS__</script>
+  <div id="clip-modal" class="clip-modal" style="display:none">
+    <div class="clip-modal-card">
+      <button id="clip-close" class="mini-btn">\u2715 close</button>
+      <video id="clip-video" controls playsinline></video>
+    </div>
+  </div>
   <script>
 __FM_JS_LIB__
 __FM_APP_JS__
