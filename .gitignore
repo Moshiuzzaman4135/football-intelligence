@@ -19,3 +19,4 @@ data/ml-site/
 tests/assets/*.mp4
 !tests/assets/README.md
 .superpowers/
+.worktrees/
