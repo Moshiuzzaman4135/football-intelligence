@@ -43,13 +43,15 @@ The selected real clip is not expected to produce an event with current heuristi
 - IoU visual tracking is not ByteTrack and can switch IDs during occlusion/camera motion.
 - Team clustering, pitch/radar coordinates, RTSP, action spotting, OCR/audio/VLM evidence, and websocket updates are deferred.
 - Event types are reviewable candidates, not Opta-level assertions.
-- Durable full-match multipart upload is implemented, but processing its `s3://` job, scoreboard OCR, heat maps, and robust goal/free-kick spotting are not yet implemented.
+- Durable full-match processing is single-host and one-at-a-time; its manual-ROI OCR and screen-space heat map are auditable MVP outputs, not robust goal/free-kick recognition or pitch calibration.
 
 ## WHAT CAN BE TESTED NOW
 
 1. Run the short generated fixture through Streamlit and verify progress, visual tracking IDs, the kick candidate/evidence, and annotated-video playback.
 2. Use FastAPI `/docs` to test jobs, status, stop, events, compact tracks, and the annotated-video endpoint.
 3. Use `/uploads` plus the presign/status/complete/abort endpoints to test restart-safe MinIO multipart upload. Each presign response supplies the exact length and SHA-256 headers required for the direct PUT.
-4. Run `pytest -q`: the stable checkpoint has 148 passing tests; live MinIO and Docker-host Compose tests are environment-gated.
+4. After completing a MinIO upload, call `POST /jobs/{id}/full-match/run`. Poll `/full-match/status`, then inspect `/scoreboard`, `/heat-map`, `/events`, and the range-capable `/annotated-video` response. Repeating the run request is safe and resumes an orphaned running manifest after an API restart.
+5. The full-match manifest and artifacts live under `data/fullmatch/{job_id}`. Completed chunks have SHA-256 checksums; raw OCR text/confidence remains audit evidence in the manifest, while raw frame observations never enter SQL.
+6. Run `pytest -q`; live MinIO and Docker-host Compose tests remain environment-gated, while the generated 121-second two-chunk media integration runs in the normal Docker suite.
 
-Do not expect a completed MinIO full-match upload to process yet. Continue from `docs/DEEPSEEK_HANDOFF.md`.
+The full-match MVP is deliberately single-host and admits one match at a time. Set the normalized `FOOTBALL_SCOREBOARD_REGION_*` values for the broadcaster before a real run. OCR cannot confirm a goal by itself, and the heat map is screen-space density—not pitch-calibrated player position.

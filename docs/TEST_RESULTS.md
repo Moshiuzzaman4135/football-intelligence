@@ -94,3 +94,29 @@ Fresh image checks:
 - Abort and failed-validation storage outages remain durable cleanup-pending terminal states and retry before the original session expiry. The lifecycle loop survives a repository outage and succeeds on its next tick.
 - Focused upload/persistence suite: 54 passed and one opt-in MinIO skip. Full protected suite: 148 passed, two environment-gated skips, and the known Starlette warning.
 - A fresh isolated Compose project created empty PostgreSQL/MinIO volumes, reached healthy PostgreSQL, ran Alembic to head before backend startup, returned `{"status":"ok"}`, and contained `jobs`, `upload_sessions`, and `alembic_version`; the project and volumes were then removed.
+
+## Restartable full-match MVP runner — 2026-08-18
+
+- RED evidence captured missing media/OCR/heat-map/manifest/runner modules and missing full-match API seams. The real media test then reproduced final concat drift (`0.9837` versus `1.0` FPS); final PTS normalization fixed it. A rebuilt-image OCR test exposed a missing TSV config when using the isolated `tessdata_fast` directory; the adapter now enables TSV output explicitly.
+- Focused Docker suite covers exact-bucket URI rejection, streamed atomic localization/failure cleanup, 150-minute/container limits, 720p/25 H.264 proxy/audio, OCR formats/monotonic and halftime consensus/raw evidence, candidate-only score changes, real Tesseract crop execution, fixed 32x18 heat-map bounds/PNG, atomic manifest/immutable options, overlap output ranges, crash/restart/no-reprocessing, stop, deterministic namespaced IDs, bounded observations, absent raw SQL tracks, API idempotence/restart/single admission, range media, and artifact reads.
+- A generated 121-second 160x90/1 FPS H.264+AAC source ran through Docker as two planned chunks. The validated chunks were H.264/no-audio with durations exactly 120 and 1 seconds; the final was H.264, 160x90, 1 FPS, approximately 121 seconds, and retained one audio stream.
+- The rebuilt image contains Tesseract 5.5.0 and the pinned `tessdata_fast` English SHA-256 `7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2`; its real crop test passed.
+- Focused full-match suite: 25 passed. Complete protected suite: 173 passed, two environment-gated skips, and the pre-existing Starlette `TestClient` warning.
+
+## Restartable full-match MVP runner fix round 1 — 2026-08-18
+
+- Lifecycle regression tests cover real object-store stream, FFprobe, and proxy failures; corrupt/mismatched manifests; process death during preparation; and deterministic stop barriers during localization, proxy preparation, and final publication.
+- The manifest now locks detector/model/device/framework/version/config, tracker/config, OCR engine/model/version/checksum, frame-error policy, proxy/output encoding, chunk/OCR/overlay/trail/heat-map settings, and source/proxy/final/heat-map hashes plus probe identity. A changed runtime is rejected on resume.
+- Restart tests cover corrupt proxy rebuilding, localized-source identity checking, durable source removal, successor invalidation after a corrupt chunk, completed-artifact verification, and persisted OCR consensus/raw support evidence.
+- Real media coverage includes N/A and `0/0` fallback, VFR average-rate identity, MKV/MOV probes, strict MP4/H.264/yuv420p/AAC timing, faststart ordering, full decode, two non-overlap chunks, and a real HTTP byte-range response.
+- Focused Docker suite: 54 passed. Complete protected suite: 202 passed, two environment-gated skips, and the pre-existing Starlette `TestClient` warning.
+- Repository-wide Ruff, Compose configuration with ephemeral values, rebuilt backend image, and `git diff --check` passed.
+
+## Restartable full-match MVP runner fix round 2 — 2026-08-18
+
+- A real 9612-style `RUNNING` manifest migrates to schema v2, verifies/recreates source and proxy identity/checksums, drops producer-less chunk checkpoints, and resumes conservatively.
+- Final artifact and heat-map hashes/probe are checkpointed before the database completion decision. Tests cover process loss before the decision, acknowledgement loss after it, replacement-byte rejection, and completed-job recovery through `TestClient`.
+- Routine FFprobe no longer requests exhaustive frame counting; derived counts are marked estimated and media subprocesses are cancellable. Full decode uses FFmpeg `-xerror` and rejects diagnostics, nonzero status, and a real truncated MP4.
+- Runtime provenance measures Tesseract's executable version and configured traineddata bytes, Ultralytics weight bytes, exact color thresholds, tracker parameters, and adapter source bytes. Missing tessdata, unresolved/non-file weights, and uninspectable adapters fail closed.
+- Focused Docker full-match suite: 72 passed. Complete protected suite: 220 passed, two environment-gated skips, and the pre-existing Starlette warning.
+- Repository-wide Ruff, Compose config with ephemeral values, rebuilt backend image, and `git diff --check` passed. The rebuilt image repeated seven real-media/provenance integration tests, including the generated 121-second two-chunk artifact and corrupted-media decode rejection.

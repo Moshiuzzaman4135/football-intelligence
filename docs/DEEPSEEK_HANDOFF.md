@@ -2,7 +2,7 @@
 
 ## Read this first
 
-This repository is at a stable checkpoint. Do not claim that 90-minute analysis, scoreboard OCR, heat maps, or reliable goal/free-kick spotting are finished. The short-clip showcase works end to end, and the full-match upload/control-plane foundation is implemented and tested.
+This repository is at a stable checkpoint after the single-host full-match MVP. Do not claim reliable goal/free-kick spotting, broadcaster-independent OCR, pitch-calibrated heat maps, or distributed production execution. The short-clip showcase and bounded restartable full-match mechanics both work end to end.
 
 Before editing:
 
@@ -23,30 +23,22 @@ Then read `AGENTS.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/DECISIONS.md`, `do
 - Durable PostgreSQL job/stage contracts with Alembic migrations and CAS/lease/retry behavior.
 - Direct-to-MinIO multipart upload: 16 MiB parts, 12 GiB maximum, opaque keys, owner seam, signed length/checksum headers, resume, abort, expiry, streamed SHA-256 validation, deterministic job creation, restart/concurrency recovery, and retryable cleanup.
 - Docker Compose bootstraps PostgreSQL, runs Alembic, provisions a bucket-scoped MinIO application user, then starts the backend/UI.
-- Current verification: 148 tests passed, two environment-gated skips, Ruff clean, empty-volume Compose/PostgreSQL/Alembic/MinIO smoke passed.
+- Same-bucket streaming localization, FFprobe validation, 720p/25 proxy, atomic manifest, restartable 120-second chunks with five seconds of context, non-overlap H.264 rendering/audio mux, and media validation.
+- Manual normalized-ROI Tesseract OCR at 1 FPS with raw evidence, clock/score consensus, candidate-only score changes, and a fixed screen-space 32x18 heat map.
+- Idempotent/resumable full-match run/status/scoreboard/heat-map APIs with one admission slot; raw full-match track observations never enter SQL.
+- Current verification: 173 tests passed, two environment-gated skips, Ruff clean, a real generated two-chunk Docker media run passed, and the pinned Tesseract crop test passed.
 
 ## What does not work yet
 
-- A job created from an `s3://` full-match upload cannot yet be processed by the legacy local-file pipeline.
-- No restartable 120-second processing runner/proxy exists.
-- No scoreboard OCR implementation or ROI UI exists.
-- No full-match heat map, team classification, pitch calibration, ByteTrack, action model, or core goal/free-kick fusion exists.
+- No automatic scoreboard ROI discovery or ROI browser control exists; configure normalized ROI environment values.
+- No team classification, pitch calibration, ByteTrack, action model, or core goal/free-kick fusion exists.
 - No browser multipart uploader exists; multipart APIs are currently exercised through API/tests.
 - No authentication. `X-Owner-ID` is a trusted local seam only. Keep ports loopback-only.
+- The runner is single-host and one-at-a-time, not Celery/distributed. A real 90-minute broadcast runtime/quality benchmark has not been recorded.
 
 ## Next exact implementation
 
-Implement `.superpowers/sdd/2026-08-18-full-match-production/mvp-runner-brief.md` using TDD. In summary:
-
-1. Stream the configured same-bucket S3 object to an atomic local file; ffprobe and generate a validated 720p/25 FPS proxy.
-2. Add an atomic manifest and process `plan_chunks()` windows one at a time, resuming completed chunks.
-3. Reuse detector/tracker/events/overlay without retaining all full-match observations or storing them in SQL.
-4. Add manual-ROI Tesseract OCR at 1 FPS, clock/score consensus, and `score_change_candidate` events.
-5. Add an explicitly screen-space 32x18 density heat map.
-6. Concatenate non-overlapping annotated chunks, mux audio, validate media, and expose status/OCR/heat-map endpoints.
-7. Add a small FastAPI-served JavaScript multipart/results page. Do not buffer the file or final video in Streamlit.
-
-Do not start with Celery, React, auth, PnLCalib, T-DEED, or AdaSpot. Finish and run the single-host MVP first.
+Run a representative legal real broadcast through the single-host MVP with its manual scoreboard ROI configured. Record total/chunk runtime, peak memory, OCR precision/failures, event review quality, and final media probe. Use that evidence to choose the next narrow milestone (likely browser multipart/results UX or detector/tracker quality). Do not jump to Celery, React, PnLCalib, T-DEED, or AdaSpot without measured need and a new approved brief.
 
 ## Verification commands
 
