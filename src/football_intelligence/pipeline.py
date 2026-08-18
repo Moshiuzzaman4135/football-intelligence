@@ -1,5 +1,6 @@
 """End-to-end video intelligence orchestration."""
 
+import json
 import logging
 import subprocess
 from pathlib import Path
@@ -180,7 +181,7 @@ class Pipeline:
 
             fused_events = fuse_events(events)
             self.repository.save_events(job_id, fused_events)
-            self.repository.save_tracks(job_id, all_tracks)
+            self._persist_raw_tracks(job_id, all_tracks)
             self.repository.save_track_summaries(job_id, summarize_tracks(all_tracks))
             self._finalize_video(temporary_output, Path(job.source_path), final_output)
             output_metadata = self._validate_output(final_output, metadata)
@@ -293,3 +294,19 @@ class Pipeline:
             device=str(getattr(self.detector, "device", "cpu") or "auto"),
             framework="ultralytics" if is_ultralytics else f"opencv-{cv2.__version__}",
         )
+
+    def _persist_raw_tracks(self, job_id: str, tracks: list[TrackObservation]) -> Path:
+        """Persist raw observations to the filesystem artifact store.
+
+        Raw per-frame observations never enter SQL: the production repository
+        rejects them, so the short-clip pipeline mirrors the full-match rule and
+        writes them beside the annotated video for retention/audit. The public
+        ``/tracks`` endpoint serves compact summaries, not this artifact.
+        """
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        path = self.output_dir / f"{job_id}.tracks.json"
+        path.write_text(
+            json.dumps([track.model_dump(mode="json") for track in tracks]),
+            encoding="utf-8",
+        )
+        return path

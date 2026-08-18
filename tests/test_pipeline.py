@@ -10,6 +10,11 @@ import numpy as np
 from football_intelligence.bus import EventBus
 from football_intelligence.detection.color import ColorDetector
 from football_intelligence.domain import JobStatus
+from football_intelligence.persistence import (
+    SQLAlchemyJobRepository,
+    create_persistence_engine,
+    create_schema,
+)
 from football_intelligence.pipeline import Pipeline
 from football_intelligence.storage import JobRepository
 from football_intelligence.tracking.iou import IoUTracker
@@ -64,7 +69,8 @@ def test_pipeline_produces_persisted_intelligence_and_h264_video(tmp_path):
     assert completed.output_path is not None
     output = Path(completed.output_path)
     assert output.exists() and output.stat().st_size > 0
-    assert len(repository.get_tracks(job.id)) >= 10
+    tracks_path = tmp_path / "outputs" / f"{job.id}.tracks.json"
+    assert len(json.loads(tracks_path.read_text(encoding="utf-8"))) >= 10
     assert repository.get_track_summaries(job.id)
     persisted = repository.get(job.id)
     assert persisted.metadata.source is not None
@@ -121,6 +127,29 @@ def test_pipeline_logs_and_survives_an_isolated_frame_failure(tmp_path, caplog):
     output_metadata = probe_video(completed.output_path)
     assert output_metadata.frame_count == 10
     assert output_metadata.duration_ms == 1000
+
+
+def test_pipeline_persists_raw_tracks_to_filesystem_when_sql_rejects(tmp_path):
+    source = tmp_path / "football.mp4"
+    make_football_clip(source)
+    engine = create_persistence_engine(f"sqlite:///{tmp_path / 'production.db'}")
+    create_schema(engine)
+    repository = SQLAlchemyJobRepository(engine)
+    job = repository.create(str(source), source.name)
+    pipeline = Pipeline(
+        repository=repository,
+        detector=ColorDetector(),
+        tracker=IoUTracker(iou_threshold=0.1),
+        output_dir=tmp_path / "outputs",
+    )
+
+    completed = pipeline.run(job.id)
+
+    assert completed.status is JobStatus.COMPLETED
+    assert repository.get_tracks(job.id) == []
+    assert repository.get_track_summaries(job.id)
+    tracks_path = tmp_path / "outputs" / f"{job.id}.tracks.json"
+    assert len(json.loads(tracks_path.read_text(encoding="utf-8"))) >= 10
 
 
 def test_reserved_worker_honors_stop_before_pipeline_entry(tmp_path):
