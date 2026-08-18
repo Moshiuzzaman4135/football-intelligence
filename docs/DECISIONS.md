@@ -93,3 +93,25 @@ Event clips and thumbnails are cut synchronously from the annotated video with F
 ## 2026-08-18: live UI via fragment polling, not websockets
 
 Both UIs auto-refresh by polling the existing status/events endpoints: Streamlit uses `@st.fragment(run_every=...)` and stops refreshing once the job settles, and the browser page polls on a fixed interval. This avoids adding websocket/SSE infrastructure while remaining one simple change away if a later task needs push updates.
+
+## 2026-08-18: three presentation layers (raw -> analytics -> presentation)
+
+Real-broadcast output previously exposed raw detector/tracker internals directly, producing a spectator-box wall, thousands of IDs, trajectory spaghetti, and kick spam. The system now separates raw AI output, analytics/evidence, and user presentation:
+
+- `CLEAN` (default): confirmed tracks, compact IDs (`P7`, `GK1`, `B`), ball marker, timestamp, transient event banner; no trails, no team/confidence spam.
+- `TACTICAL`: adds short (0.5-1.5 s) footpoint/center trails with age, point, and jump limits.
+- `DEBUG`: raw boxes, rejected boxes + reason, confidence, track state, and the playing-area polygon.
+
+Raw detector output is retained in the `*.tracks.json` artifact and metrics, never auto-promoted to presentation.
+
+## 2026-08-18: playing-area filter before tracking
+
+A normalized `PlayingAreaPolygon` (manual config; no PnLCalib yet) filters person detections by bottom-center footpoint before the tracker. The ball uses an expanded margin because it may be airborne or cross the touchline. This rejects spectators/bench/camera-operator boxes without discarding raw output (kept in metrics/DEBUG).
+
+## 2026-08-18: track confirmation and presentation ceiling
+
+IoU tracks now carry `tentative`/`confirmed` presentation state (`confirm_min_hits`), so a one-frame detection never creates a visible ID. The overlay applies a configurable active-track ceiling (default 30) preferring established continuity + confidence. This is a presentation/quality safety limit, not a semantic assertion that a match has at most N participants.
+
+## 2026-08-18: kick as a contact->release state machine
+
+The kick detector is no longer a bare speed threshold. A `kick_candidate` requires a valid same-track ball across frames, a minimum number of near-player contact frames, separation (distance increasing), inter-frame speed above threshold, and a cooldown. Heuristic-only confidence is capped (default 0.70) and earned from continuity/contact/speed rather than inflating toward 95%. Extreme scene/camera transitions (single-frame ball jump) suppress emission.

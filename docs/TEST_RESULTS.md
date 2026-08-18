@@ -152,3 +152,11 @@ Fresh image checks:
 - Live verification against PostgreSQL: job history listed prior jobs; a throwaway job completed and was deleted (204), then `GET /jobs/{id}` returned 404 with the row gone from the list.
 - The Streamlit showcase gained a **Job history** sidebar to load or delete past jobs.
 - Full protected suite: 243 passed, 5 environment-gated skips; Ruff and `git diff --check` clean.
+
+## Broadcast quality-recovery layer — 2026-08-18 (DeepSeek recovery session)
+
+- Root causes: the color detector emits every saturated non-pitch blob as a player (spectator wall); the IoU tracker mints a new ID per unmatched detection (thousands of IDs); the overlay drew full-history trails with `player #ID unknown %` labels and a persistent event banner; the kick rule was a bare speed threshold with `0.55 + speed/(4*threshold)` confidence capped at 0.95 (kick spam).
+- New coverage (273 tests passing): pitch filter (footpoint/ball-margin, normalized polygon), track `tentative/confirmed` state + ceiling, CLEAN/TACTICAL/DEBUG overlay modes, trail age/points/jump/gap reset, and a contact→release kick state machine with cooldown, continuity, separation, scene-jump suppression, and a 0.70 confidence cap.
+- Synthetic fixture regression: still emits exactly one `kick_candidate` (now 1.8-1.9 s at 0.70; was 1.6-1.7 s at 0.85), with metrics `raw_person_detections=600`, `peak_confirmed_person_tracks=2`, `overlay_mode=clean`.
+- Real broadcast (1920x1080/25 FPS, 180 s, color detector + manual polygon, CPU) benchmark: `raw_person_detections=293711` (~65/frame), `pitch_filtered_person_detections=126843` (~43% inside pitch), `peak_confirmed_person_tracks=126`, and **30** `kick_candidate` events at confidence 0.50-0.70 (vs. the prior near-constant 95% spam). The overlay caps displayed person tracks at 30 and hides tentative tracks, so the presentation is clean even though the deterministic color detector still emits on-pitch false positives.
+- Honest boundary: the quality layer fixes presentation and event semantics, but the deterministic color detector remains fundamentally noisy ON the pitch (it treats grass texture/lines/shadows as players). Real-broadcast accuracy requires the documented YOLO11n/four-class path on GPU; `nvidia-smi` could not reach the driver this session, so no fresh YOLO run was recorded.

@@ -32,7 +32,9 @@ Real-footage evaluation fixture: ignored `tests/assets/football-demo.mp4`, from 
 
 ## EXPECTED EVENTS
 
-The generated fixture produces one `KICK CANDIDATE` around 1.60-1.70 seconds at confidence 85.0%. Its evidence records approximately 300 pixels/second ball speed, about 59 pixels of player proximity, frames 16 and 17, continuous ball track 4, relevant player track 3, source `heuristic.temporal`, and `needs_review=true`.
+The generated fixture produces one `KICK CANDIDATE` around 1.8-1.9 seconds at confidence 70.0% (the heuristic-only confidence is now capped and earned rather than inflated). Its evidence records approximately 300 pixels/second ball speed, player proximity, continuous ball track, relevant player track, source `heuristic.temporal`, and `needs_review=true`.
+
+The overlay defaults to `CLEAN` mode (compact IDs, no trajectory spaghetti). Set `FOOTBALL_OVERLAY_MODE=tactical` to show short footpoint trails, or `FOOTBALL_OVERLAY_MODE=debug` for raw boxes/rejections/pitch polygon.
 
 The selected real clip is not expected to produce an event with current heuristics. It is useful for showing actual person/ball model behavior, not an event-rich match sequence.
 

@@ -22,6 +22,7 @@ from football_intelligence.domain import (
 from football_intelligence.events import TemporalEventEngine, fuse_events
 from football_intelligence.overlay import draw_overlay
 from football_intelligence.persistence import JobStore
+from football_intelligence.pitch import PERSON_CLASSES
 from football_intelligence.quality import QualityOptions, apply_confidence_thresholds
 from football_intelligence.tracking.base import Tracker
 from football_intelligence.tracking.summary import summarize_tracks
@@ -130,7 +131,9 @@ class Pipeline:
                         )
                         detection_seconds += perf_counter() - timer
                         raw_person_detections += sum(
-                            1 for detection in detections if detection.object_class != "ball"
+                            1
+                            for detection in detections
+                            if detection.object_class in PERSON_CLASSES
                         )
                         detections = apply_confidence_thresholds(
                             detections,
@@ -147,12 +150,13 @@ class Pipeline:
                         pitch_filtered_person_detections += sum(
                             1
                             for detection in detections
-                            if detection.object_class != "ball"
+                            if detection.object_class in PERSON_CLASSES
                         )
                         rejected_spectator_detections += sum(
                             1
-                            for _, reason in filtered.rejected
-                            if reason == "outside_pitch"
+                            for detection, reason in filtered.rejected
+                            if detection.object_class in PERSON_CLASSES
+                            and reason == "outside_pitch"
                         )
                         self.bus.publish(
                             "detection.completed",
