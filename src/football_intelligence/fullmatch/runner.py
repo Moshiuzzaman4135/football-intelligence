@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from football_intelligence.detection.base import Detector
 from football_intelligence.detection.color import ColorDetector
 from football_intelligence.domain import (
+    Detection,
     FootballEvent,
     JobRecord,
     JobStatus,
@@ -56,8 +57,10 @@ from football_intelligence.fullmatch.provenance import measure_runtime_provenanc
 from football_intelligence.object_store import ObjectStore
 from football_intelligence.overlay import draw_overlay
 from football_intelligence.persistence import JobStore
+from football_intelligence.quality import QualityOptions, apply_confidence_thresholds
 from football_intelligence.tracking.base import Tracker
 from football_intelligence.tracking.iou import IoUTracker
+from football_intelligence.trails import TrailBuffer
 
 TRACK_NAMESPACE_SIZE = 1_000_000
 
@@ -143,6 +146,7 @@ class FullMatchRunner:
         options: RunnerOptions | None = None,
         provenance: RuntimeProvenance | None = None,
         max_frame_errors: int | None = None,
+        quality: QualityOptions | None = None,
     ) -> None:
         self.repository = repository
         self.object_store = object_store
@@ -167,6 +171,7 @@ class FullMatchRunner:
             }
         )
         self.max_frame_errors = effective_max_frame_errors
+        self.quality = quality or QualityOptions()
         self._consensus: ScoreboardConsensus | None = None
 
     def workspace_for(self, job_id: str) -> Path:
@@ -664,7 +669,7 @@ class FullMatchRunner:
     ) -> ChunkResult:
         detector = self.detector_factory()
         tracker = self.tracker_factory()
-        engine = TemporalEventEngine(job_id)
+        quality = self.quality
         parser = ScoreboardParser()
         heat_map = ScreenSpaceHeatMap()
         events: list[FootballEvent] = []
@@ -676,6 +681,18 @@ class FullMatchRunner:
         fps = float(capture.get(cv2.CAP_PROP_FPS))
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        engine = TemporalEventEngine(
+            job_id,
+            kick_speed_px_s=quality.kick_speed_px_s,
+            proximity_px=quality.kick_proximity_px,
+            min_contact_frames=quality.kick_min_contact_frames,
+            min_ball_continuity=quality.kick_min_ball_continuity,
+            cooldown_ms=quality.kick_cooldown_ms,
+            max_confidence=quality.kick_max_confidence,
+            max_ball_jump_px=round(
+                quality.kick_max_jump_ratio * (width**2 + height**2) ** 0.5
+            ),
+        )
         start_frame = round(chunk.context_start_ms * fps / 1_000)
         end_frame = round(chunk.end_ms * fps / 1_000)
         capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -687,10 +704,10 @@ class FullMatchRunner:
         if not writer.isOpened():
             capture.release()
             raise RuntimeError(f"could not open chunk writer {work_path}")
-        trail_buffer = BoundedTrails(
-            max_points=self.options.trail_max_points,
-            max_inactive_frames=self.options.trail_max_inactive_frames,
-            max_tracks=self.options.trail_max_tracks,
+        trail_buffer = TrailBuffer(
+            max_age_ms=quality.trail_max_age_ms,
+            max_points=quality.trail_max_points,
+            max_jump_ratio=quality.trail_max_jump_ratio,
         )
         peak_observations = 0
         frame_errors = 0
@@ -707,8 +724,19 @@ class FullMatchRunner:
                 ):
                     raise RuntimeError("full-match stop requested")
                 rendered = frame
+                rejected_detections: list[tuple[Detection, str]] = []
                 try:
                     detections = detector.detect(frame, frame_index, timestamp_ms)
+                    detections = apply_confidence_thresholds(
+                        detections,
+                        person_min_confidence=quality.person_min_confidence,
+                        ball_min_confidence=quality.ball_min_confidence,
+                    )
+                    filtered = quality.playing_area.filter(
+                        detections, frame_width=width, frame_height=height
+                    )
+                    detections = filtered.kept
+                    rejected_detections = filtered.rejected
                     local_tracks = tracker.update(detections, frame_index, timestamp_ms)
                     tracks = [
                         track.model_copy(
@@ -761,7 +789,13 @@ class FullMatchRunner:
                     for candidate in engine.drain_candidates():
                         if candidate.end_ms >= chunk.output_start_ms:
                             events.append(candidate)
-                    trails = trail_buffer.update(tracks, frame_index)
+                    trails = trail_buffer.update(
+                        tracks,
+                        frame_index=frame_index,
+                        timestamp_ms=timestamp_ms,
+                        frame_width=width,
+                        frame_height=height,
+                    )
                     active_events = active_events_at(
                         events[-50:],
                         timestamp_ms,
@@ -773,6 +807,11 @@ class FullMatchRunner:
                         active_events,
                         timestamp_ms=timestamp_ms,
                         trails=trails,
+                        mode=quality.overlay_mode,
+                        active_ceiling=quality.active_track_ceiling,
+                        playing_area=quality.playing_area.polygon or None,
+                        rejected=rejected_detections,
+                        banner_duration_ms=quality.banner_duration_ms,
                     )
                 except Exception:
                     frame_errors += 1

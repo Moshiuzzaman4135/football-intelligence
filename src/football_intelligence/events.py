@@ -1,4 +1,18 @@
-"""Temporal football candidate rules and evidence-preserving fusion."""
+"""Temporal football candidate rules and evidence-preserving fusion.
+
+The kick detector is a small state machine rather than a bare speed threshold:
+
+    SEARCHING -> CONTACT (ball near a player)
+              -> RELEASE (ball accelerates away + separates)
+              -> KICK_CANDIDATE -> COOLDOWN
+
+A candidate requires ball-track continuity across multiple frames, a minimum
+number of near-player contact frames, separation (distance increasing), and an
+inter-frame speed above threshold. Confidence is earned from those factors and
+is capped for heuristic-only evidence.
+"""
+
+from __future__ import annotations
 
 from math import dist, prod
 
@@ -75,87 +89,191 @@ def fuse_events(events: list[FootballEvent], window_ms: int = 1500) -> list[Foot
 
 
 class TemporalEventEngine:
-    def __init__(self, job_id: str, kick_speed_px_s: float = 250, proximity_px: float = 60):
+    def __init__(
+        self,
+        job_id: str,
+        kick_speed_px_s: float = 250,
+        proximity_px: float = 60,
+        *,
+        min_contact_frames: int = 1,
+        min_ball_continuity: int = 2,
+        cooldown_ms: int = 1000,
+        max_confidence: float = 0.70,
+        max_ball_jump_px: float | None = None,
+    ):
         self.job_id = job_id
         self.kick_speed_px_s = kick_speed_px_s
         self.proximity_px = proximity_px
-        self._previous_ball: TrackObservation | None = None
-        self._previous_near_player: TrackObservation | None = None
-        self._previous_proximity_px: float | None = None
+        self.min_contact_frames = min_contact_frames
+        self.min_ball_continuity = min_ball_continuity
+        self.cooldown_ms = cooldown_ms
+        self.max_confidence = max_confidence
+        self.max_ball_jump_px = max_ball_jump_px
+
+        self._ball_track_id: int | None = None
+        self._ball_continuity = 0
+        self._last_ball: TrackObservation | None = None
+        self._contact_player: TrackObservation | None = None
+        self._contact_frames = 0
+        self._contact_distance: float | None = None
+        self._contact_ts_ms: int | None = None
+        self._contact_frame_index: int | None = None
+        self._last_kick_ms: int = -(10**9)
         self._events: list[FootballEvent] = []
         self._drain_index = 0
-        self._last_kick_ms = -10_000
 
     def observe(self, tracks: list[TrackObservation]) -> None:
         balls = [track for track in tracks if track.object_class == "ball"]
         players = [track for track in tracks if track.object_class in {"player", "goalkeeper"}]
         if not balls:
+            self._ball_track_id = None
+            self._ball_continuity = 0
+            self._last_ball = None
+            self._reset_contact()
             return
         ball = max(balls, key=lambda item: item.confidence)
 
-        if self._previous_ball is not None:
-            elapsed_ms = ball.timestamp_ms - self._previous_ball.timestamp_ms
+        if self._ball_track_id != ball.track_id:
+            self._ball_continuity = 0
+            self._last_ball = None
+            self._reset_contact()
+        self._ball_track_id = ball.track_id
+
+        speed = 0.0
+        if self._last_ball is not None:
+            elapsed_ms = ball.timestamp_ms - self._last_ball.timestamp_ms
             if elapsed_ms > 0:
-                displacement = dist(ball.bbox.center, self._previous_ball.bbox.center)
+                displacement = dist(ball.bbox.center, self._last_ball.bbox.center)
                 speed = displacement * 1000 / elapsed_ms
                 if (
-                    speed >= self.kick_speed_px_s
-                    and ball.track_id == self._previous_ball.track_id
-                    and self._previous_near_player is not None
-                    and self._previous_proximity_px is not None
-                    and ball.timestamp_ms - self._last_kick_ms > 750
+                    self.max_ball_jump_px is not None
+                    and displacement > self.max_ball_jump_px
                 ):
-                    confidence = min(0.95, 0.55 + speed / (4 * self.kick_speed_px_s))
-                    self._events.append(
-                        FootballEvent(
-                            job_id=self.job_id,
-                            event_type="kick_candidate",
-                            start_ms=self._previous_ball.timestamp_ms,
-                            end_ms=ball.timestamp_ms,
-                            description="Ball moved rapidly near a tracked player",
-                            confidence=confidence,
-                            evidence=[
-                                EventEvidence(
-                                    kind="ball_speed_px_s",
-                                    value=round(speed, 2),
-                                    confidence=confidence,
-                                    frame_refs=[self._previous_ball.frame_index, ball.frame_index],
-                                ),
-                                EventEvidence(
-                                    kind="player_proximity_px",
-                                    value=round(self._previous_proximity_px, 2),
-                                    confidence=confidence,
-                                    frame_refs=[self._previous_ball.frame_index],
-                                ),
-                            ],
-                            source=["heuristic.temporal"],
-                            track_ids=[self._previous_near_player.track_id, ball.track_id],
-                            frame_refs=[self._previous_ball.frame_index, ball.frame_index],
-                        )
-                    )
-                    self._last_kick_ms = ball.timestamp_ms
+                    # extreme scene/camera transition: never treat as a kick
+                    self._ball_continuity = 0
+                    self._last_ball = ball
+                    self._reset_contact()
+                    return
 
-        self._previous_ball = ball
-        self._previous_near_player = min(
+        near_player = min(
             players,
             key=lambda player: dist(player.bbox.center, ball.bbox.center),
             default=None,
         )
+        proximity = (
+            dist(near_player.bbox.center, ball.bbox.center)
+            if near_player is not None
+            else float("inf")
+        )
+
+        # Snapshot the pre-frame contact state: the release transition is
+        # measured against it, so the event's start lands on the last contact
+        # frame before the ball accelerated away.
+        pre_contact_player = self._contact_player
+        pre_contact_frames = self._contact_frames
+        pre_contact_distance = self._contact_distance
+        pre_contact_ts_ms = self._contact_ts_ms
+        pre_contact_frame_index = self._contact_frame_index
+
+        moving_away = (
+            pre_contact_distance is not None and proximity > pre_contact_distance
+        )
+
+        # Update contact evidence for the next frame.
+        if near_player is not None and proximity <= self.proximity_px:
+            if (
+                self._contact_player is None
+                or self._contact_player.track_id != near_player.track_id
+            ):
+                self._contact_frames = 0
+            self._contact_player = near_player
+            self._contact_frames += 1
+            self._contact_distance = proximity
+            self._contact_ts_ms = ball.timestamp_ms
+            self._contact_frame_index = ball.frame_index
+
+        self._ball_continuity += 1
+
         if (
-            self._previous_near_player is not None
-            and (
-                proximity := dist(
-                    self._previous_near_player.bbox.center, ball.bbox.center
-                )
-            )
-            > self.proximity_px
+            speed >= self.kick_speed_px_s
+            and pre_contact_player is not None
+            and pre_contact_frames >= self.min_contact_frames
+            and self._ball_continuity >= self.min_ball_continuity
+            and moving_away
+            and ball.timestamp_ms - self._last_kick_ms >= self.cooldown_ms
         ):
-            self._previous_near_player = None
-            self._previous_proximity_px = None
-        elif self._previous_near_player is not None:
-            self._previous_proximity_px = proximity
-        else:
-            self._previous_proximity_px = None
+            self._emit_kick(
+                ball,
+                speed=speed,
+                contact_player=pre_contact_player,
+                contact_frames=pre_contact_frames,
+                contact_distance=pre_contact_distance or 0.0,
+                contact_ts_ms=pre_contact_ts_ms or ball.timestamp_ms,
+                contact_frame_index=pre_contact_frame_index or ball.frame_index,
+            )
+            self._last_kick_ms = ball.timestamp_ms
+            self._reset_contact()
+
+        self._last_ball = ball
+
+    def _emit_kick(
+        self,
+        ball: TrackObservation,
+        *,
+        speed: float,
+        contact_player: TrackObservation,
+        contact_frames: int,
+        contact_distance: float,
+        contact_ts_ms: int,
+        contact_frame_index: int,
+    ) -> None:
+        confidence = self._confidence(
+            speed=speed,
+            contact_frames=contact_frames,
+            continuity=self._ball_continuity,
+        )
+        self._events.append(
+            FootballEvent(
+                job_id=self.job_id,
+                event_type="kick_candidate",
+                start_ms=contact_ts_ms,
+                end_ms=ball.timestamp_ms,
+                description="Ball accelerated away from a tracked player",
+                confidence=confidence,
+                evidence=[
+                    EventEvidence(
+                        kind="ball_speed_px_s",
+                        value=round(speed, 2),
+                        confidence=confidence,
+                        frame_refs=[contact_frame_index, ball.frame_index],
+                    ),
+                    EventEvidence(
+                        kind="player_proximity_px",
+                        value=round(contact_distance, 2),
+                        confidence=confidence,
+                        frame_refs=[contact_frame_index],
+                    ),
+                ],
+                source=["heuristic.temporal"],
+                track_ids=[contact_player.track_id, ball.track_id],
+                frame_refs=[contact_frame_index, ball.frame_index],
+            )
+        )
+
+    def _confidence(self, *, speed: float, contact_frames: int, continuity: int) -> float:
+        score = 0.45
+        score += 0.05 * min(contact_frames, 3)
+        score += 0.05 * min(max(0, continuity - self.min_ball_continuity), 3)
+        if speed >= 2 * self.kick_speed_px_s:
+            score += 0.10
+        return round(min(self.max_confidence, score), 4)
+
+    def _reset_contact(self) -> None:
+        self._contact_player = None
+        self._contact_frames = 0
+        self._contact_distance = None
+        self._contact_ts_ms = None
+        self._contact_frame_index = None
 
     def finalize(self) -> list[FootballEvent]:
         return deduplicate_events(self._events)

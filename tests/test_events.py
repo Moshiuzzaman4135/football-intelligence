@@ -151,3 +151,91 @@ def test_candidate_drain_emits_each_raw_event_once():
 
     assert len(engine.drain_candidates()) == 1
     assert engine.drain_candidates() == []
+
+
+def test_high_ball_motion_without_player_contact_is_not_a_kick():
+    engine = TemporalEventEngine(job_id="job-1", kick_speed_px_s=150)
+    # ball far from any player, moving fast
+    engine.observe([observation(9, "ball", (300, 100), 0, 0)])
+    engine.observe([observation(9, "ball", (360, 100), 100, 1)])
+
+    assert engine.finalize() == []
+
+
+def test_one_frame_ball_detection_is_not_a_kick():
+    engine = TemporalEventEngine(job_id="job-1", kick_speed_px_s=150)
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 0, 0),
+            observation(9, "ball", (120, 120), 0, 0),
+        ]
+    )
+
+    assert engine.finalize() == []
+
+
+def test_same_contact_emits_one_kick_via_cooldown():
+    engine = TemporalEventEngine(job_id="job-1", kick_speed_px_s=150, cooldown_ms=1000)
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 0, 0),
+            observation(9, "ball", (120, 120), 0, 0),
+        ]
+    )
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 100, 1),
+            observation(9, "ball", (170, 120), 100, 1),
+        ]
+    )
+    # same contact continues to move fast: cooldown must suppress a second event
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 200, 2),
+            observation(9, "ball", (240, 120), 200, 2),
+        ]
+    )
+
+    events = engine.finalize()
+
+    assert len(events) == 1
+
+
+def test_camera_jump_is_not_a_kick():
+    engine = TemporalEventEngine(
+        job_id="job-1", kick_speed_px_s=150, max_ball_jump_px=80
+    )
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 0, 0),
+            observation(9, "ball", (120, 120), 0, 0),
+        ]
+    )
+    # ball teleports across the frame (scene cut), not a kick
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 100, 1),
+            observation(9, "ball", (500, 400), 100, 1),
+        ]
+    )
+
+    assert engine.finalize() == []
+
+
+def test_heuristic_kick_confidence_is_capped():
+    engine = TemporalEventEngine(
+        job_id="job-1", kick_speed_px_s=100, max_confidence=0.70
+    )
+    for frame_index, ts in enumerate([0, 100, 200]):
+        x = 120 + frame_index * 40
+        engine.observe(
+            [
+                observation(1, "player", (100, 100), ts, frame_index),
+                observation(9, "ball", (x, 120), ts, frame_index),
+            ]
+        )
+
+    events = engine.finalize()
+
+    assert events
+    assert all(event.confidence <= 0.70 for event in events)

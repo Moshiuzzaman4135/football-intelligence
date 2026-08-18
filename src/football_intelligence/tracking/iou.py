@@ -22,6 +22,7 @@ class _Track:
     object_class: str
     bbox: BoundingBox
     missed: int = 0
+    hits: int = 0
 
 
 class IoUTracker:
@@ -30,10 +31,12 @@ class IoUTracker:
         iou_threshold: float = 0.25,
         max_missed: int = 8,
         ball_max_distance: float = 50,
+        confirm_min_hits: int = 2,
     ):
         self.iou_threshold = iou_threshold
         self.max_missed = max_missed
         self.ball_max_distance = ball_max_distance
+        self.confirm_min_hits = confirm_min_hits
         self._tracks: dict[int, _Track] = {}
         self._next_track_id = 1
 
@@ -77,7 +80,9 @@ class IoUTracker:
             else:
                 track.bbox = detection.bbox
                 track.missed = 0
+            track.hits += 1
             claimed_tracks.add(track.track_id)
+            state = "confirmed" if track.hits >= self.confirm_min_hits else "tentative"
             observations.append(
                 TrackObservation(
                     track_id=track.track_id,
@@ -86,6 +91,8 @@ class IoUTracker:
                     confidence=detection.confidence,
                     timestamp_ms=timestamp_ms,
                     frame_index=frame_index,
+                    state=state,
+                    hits=track.hits,
                 )
             )
 

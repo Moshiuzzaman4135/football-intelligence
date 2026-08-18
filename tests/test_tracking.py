@@ -47,3 +47,25 @@ def test_iou_tracker_keeps_fast_ball_id_by_nearby_center():
     second = tracker.update([detection("ball", (130, 100, 140, 110), 1)], 1, 100)
 
     assert first[0].track_id == second[0].track_id
+
+
+def test_track_is_tentative_until_confirmed():
+    tracker = IoUTracker(iou_threshold=0.2, max_missed=2, confirm_min_hits=2)
+
+    first = tracker.update([detection("player", (10, 10, 40, 80), 0)], 0, 0)
+    second = tracker.update([detection("player", (14, 10, 44, 80), 1)], 1, 40)
+
+    assert first[0].state == "tentative"
+    assert second[0].state == "confirmed"
+
+
+def test_track_confirm_min_hits_is_configurable():
+    tracker = IoUTracker(iou_threshold=0.2, max_missed=2, confirm_min_hits=3)
+
+    first = tracker.update([detection("player", (10, 10, 40, 80), 0)], 0, 0)
+    second = tracker.update([detection("player", (14, 10, 44, 80), 1)], 1, 40)
+    third = tracker.update([detection("player", (18, 10, 48, 80), 2)], 2, 80)
+
+    assert first[0].state == "tentative"
+    assert second[0].state == "tentative"
+    assert third[0].state == "confirmed"

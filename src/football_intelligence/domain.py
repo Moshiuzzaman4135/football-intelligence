@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 TeamId = Literal["team_1", "team_2", "unknown"]
+TrackState = Literal["tentative", "confirmed", "lost"]
 
 
 class JobStatus(StrEnum):
@@ -107,6 +108,8 @@ class TrackObservation(BaseModel):
     player: str = "unknown"
     pitch_x: float | None = None
     pitch_y: float | None = None
+    state: TrackState = "confirmed"
+    hits: int = Field(default=0, ge=0)
 
 
 class EventEvidence(BaseModel):

@@ -43,6 +43,7 @@ from football_intelligence.persistence import (
     create_persistence_engine,
 )
 from football_intelligence.pipeline import Pipeline
+from football_intelligence.quality import QualityOptions, playing_area_from_polygon
 from football_intelligence.settings import Settings
 from football_intelligence.storage import InvalidJobTransition, JobNotFound, JobRepository
 from football_intelligence.tracking.iou import IoUTracker
@@ -59,6 +60,32 @@ from football_intelligence.uploads import (
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 _LOGGER = logging.getLogger(__name__)
+
+
+def _quality_options(settings: Settings) -> QualityOptions:
+    return QualityOptions(
+        overlay_mode=settings.overlay_mode,
+        playing_area=playing_area_from_polygon(
+            settings.playing_area_polygon,
+            person_tolerance=settings.playing_area_person_tolerance,
+            ball_margin=settings.playing_area_ball_margin,
+        ),
+        person_min_confidence=settings.person_min_confidence,
+        ball_min_confidence=settings.ball_min_confidence,
+        active_track_ceiling=settings.active_track_ceiling,
+        track_confirm_min_hits=settings.track_confirm_min_hits,
+        trail_max_age_ms=settings.trail_max_age_ms,
+        trail_max_points=settings.trail_max_points,
+        trail_max_jump_ratio=settings.trail_max_jump_ratio,
+        banner_duration_ms=settings.banner_duration_ms,
+        kick_speed_px_s=settings.kick_speed_px_s,
+        kick_proximity_px=settings.kick_proximity_px,
+        kick_min_contact_frames=settings.kick_min_contact_frames,
+        kick_min_ball_continuity=settings.kick_min_ball_continuity,
+        kick_cooldown_ms=settings.kick_cooldown_ms,
+        kick_max_confidence=settings.kick_max_confidence,
+        kick_max_jump_ratio=settings.kick_max_jump_ratio,
+    )
 
 
 class CreateMultipartUploadRequest(BaseModel):
@@ -133,10 +160,11 @@ def create_app(
                     model_name=runtime_settings.model_name,
                     device=runtime_settings.device,
                 ),
-                tracker=IoUTracker(),
+                tracker=IoUTracker(confirm_min_hits=runtime_settings.track_confirm_min_hits),
                 output_dir=output_dir,
                 bus=bus,
                 max_frame_errors=runtime_settings.max_frame_errors,
+                quality=_quality_options(runtime_settings),
             )
 
     if full_match_runner_factory is None and runtime_object_store is not None:
@@ -153,7 +181,9 @@ def create_app(
                     model_name=runtime_settings.model_name,
                     device=runtime_settings.device,
                 ),
-                tracker_factory=IoUTracker,
+                tracker_factory=lambda: IoUTracker(
+                    confirm_min_hits=runtime_settings.track_confirm_min_hits
+                ),
                 ocr_engine=ocr_engine,
                 options=RunnerOptions(
                     scoreboard_region=ScoreboardRegion(
@@ -164,6 +194,7 @@ def create_app(
                     )
                 ),
                 max_frame_errors=runtime_settings.max_frame_errors,
+                quality=_quality_options(runtime_settings),
             )
 
     @asynccontextmanager

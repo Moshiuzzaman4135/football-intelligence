@@ -17,6 +17,25 @@ class Settings(BaseSettings):
     model_name: str = "yolo11n.pt"
     device: str = "auto"
     max_frame_errors: int = Field(default=10, ge=0, le=1000)
+    overlay_mode: Literal["clean", "tactical", "debug"] = "clean"
+    playing_area_polygon: list[list[float]] = Field(default_factory=list)
+    playing_area_person_tolerance: float = Field(default=0.03, ge=0, le=0.5)
+    playing_area_ball_margin: float = Field(default=0.10, ge=0, le=0.5)
+    person_min_confidence: float = Field(default=0.25, ge=0, le=1)
+    ball_min_confidence: float = Field(default=0.25, ge=0, le=1)
+    active_track_ceiling: int = Field(default=30, ge=1, le=200)
+    track_confirm_min_hits: int = Field(default=2, ge=1, le=20)
+    trail_max_age_ms: int = Field(default=1500, ge=1)
+    trail_max_points: int = Field(default=20, ge=1, le=500)
+    trail_max_jump_ratio: float = Field(default=0.35, ge=0, le=1)
+    banner_duration_ms: int = Field(default=1500, ge=0)
+    kick_speed_px_s: float = Field(default=250, ge=0)
+    kick_proximity_px: float = Field(default=60, ge=0)
+    kick_min_contact_frames: int = Field(default=1, ge=1)
+    kick_min_ball_continuity: int = Field(default=2, ge=1)
+    kick_cooldown_ms: int = Field(default=1000, ge=0)
+    kick_max_confidence: float = Field(default=0.70, ge=0, le=1)
+    kick_max_jump_ratio: float = Field(default=0.30, ge=0, le=1)
     database_url: str = ""
     upload_cleanup_interval_seconds: float = Field(default=300, ge=0.01)
     object_store_backend: Literal["filesystem", "s3"] = "filesystem"

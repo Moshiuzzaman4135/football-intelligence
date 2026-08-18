@@ -11,6 +11,7 @@ import cv2
 from football_intelligence.bus import EventBus
 from football_intelligence.detection.base import Detector
 from football_intelligence.domain import (
+    Detection,
     FootballEvent,
     JobRecord,
     JobStatus,
@@ -21,8 +22,10 @@ from football_intelligence.domain import (
 from football_intelligence.events import TemporalEventEngine, fuse_events
 from football_intelligence.overlay import draw_overlay
 from football_intelligence.persistence import JobStore
+from football_intelligence.quality import QualityOptions, apply_confidence_thresholds
 from football_intelligence.tracking.base import Tracker
 from football_intelligence.tracking.summary import summarize_tracks
+from football_intelligence.trails import TrailBuffer
 from football_intelligence.video import iter_frames, probe_video
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,7 @@ class Pipeline:
         output_dir: str | Path,
         bus: EventBus | None = None,
         max_frame_errors: int = 10,
+        quality: QualityOptions | None = None,
     ):
         self.repository = repository
         self.detector = detector
@@ -45,6 +49,7 @@ class Pipeline:
         self.output_dir = Path(output_dir)
         self.bus = bus or EventBus()
         self.max_frame_errors = max_frame_errors
+        self.quality = quality or QualityOptions()
 
     def run(self, job_id: str) -> JobRecord:
         job = self.repository.get(job_id)
@@ -79,16 +84,37 @@ class Pipeline:
             if not writer.isOpened():
                 raise RuntimeError(f"could not open output writer: {temporary_output}")
 
-            engine = TemporalEventEngine(job_id)
+            quality = self.quality
+            engine = TemporalEventEngine(
+                job_id,
+                kick_speed_px_s=quality.kick_speed_px_s,
+                proximity_px=quality.kick_proximity_px,
+                min_contact_frames=quality.kick_min_contact_frames,
+                min_ball_continuity=quality.kick_min_ball_continuity,
+                cooldown_ms=quality.kick_cooldown_ms,
+                max_confidence=quality.kick_max_confidence,
+                max_ball_jump_px=round(
+                    quality.kick_max_jump_ratio
+                    * (metadata.width**2 + metadata.height**2) ** 0.5
+                ),
+            )
+            trail_buffer = TrailBuffer(
+                max_age_ms=quality.trail_max_age_ms,
+                max_points=quality.trail_max_points,
+                max_jump_ratio=quality.trail_max_jump_ratio,
+            )
             all_tracks: list[TrackObservation] = []
             events: list[FootballEvent] = []
             event_ids: set[str] = set()
-            trails: dict[int, list[tuple[int, int]]] = {}
             frame_errors = 0
             detection_seconds = 0.0
             tracking_seconds = 0.0
             overlay_seconds = 0.0
             processed_frames = 0
+            raw_person_detections = 0
+            pitch_filtered_person_detections = 0
+            rejected_spectator_detections = 0
+            peak_confirmed_person_tracks = 0
             try:
                 for packet in iter_frames(job.source_path):
                     if self.repository.get(job_id).status is JobStatus.STOPPING:
@@ -96,12 +122,38 @@ class Pipeline:
                         self.bus.publish("job.stopped", {"job_id": job_id})
                         return stopped
                     rendered = packet.frame
+                    rejected_detections: list[tuple[Detection, str]] = []
                     try:
                         timer = perf_counter()
                         detections = self.detector.detect(
                             packet.frame, packet.frame_index, packet.timestamp_ms
                         )
                         detection_seconds += perf_counter() - timer
+                        raw_person_detections += sum(
+                            1 for detection in detections if detection.object_class != "ball"
+                        )
+                        detections = apply_confidence_thresholds(
+                            detections,
+                            person_min_confidence=quality.person_min_confidence,
+                            ball_min_confidence=quality.ball_min_confidence,
+                        )
+                        filtered = quality.playing_area.filter(
+                            detections,
+                            frame_width=metadata.width,
+                            frame_height=metadata.height,
+                        )
+                        detections = filtered.kept
+                        rejected_detections = filtered.rejected
+                        pitch_filtered_person_detections += sum(
+                            1
+                            for detection in detections
+                            if detection.object_class != "ball"
+                        )
+                        rejected_spectator_detections += sum(
+                            1
+                            for _, reason in filtered.rejected
+                            if reason == "outside_pitch"
+                        )
                         self.bus.publish(
                             "detection.completed",
                             {
@@ -118,6 +170,15 @@ class Pipeline:
                         tracking_seconds += perf_counter() - timer
                         all_tracks.extend(tracks)
                         engine.observe(tracks)
+                        peak_confirmed_person_tracks = max(
+                            peak_confirmed_person_tracks,
+                            sum(
+                                1
+                                for track in tracks
+                                if track.state == "confirmed"
+                                and track.object_class != "ball"
+                            ),
+                        )
                         self.bus.publish(
                             "tracking.updated",
                             {
@@ -134,17 +195,13 @@ class Pipeline:
                                     "event.candidate", candidate.model_dump(mode="json")
                                 )
 
-                        for track in tracks:
-                            center = (
-                                round(track.bbox.center[0]),
-                                round(
-                                    track.bbox.y2
-                                    if track.object_class != "ball"
-                                    else track.bbox.center[1]
-                                ),
-                            )
-                            trails.setdefault(track.track_id, []).append(center)
-                            trails[track.track_id] = trails[track.track_id][-30:]
+                        trails = trail_buffer.update(
+                            tracks,
+                            frame_index=packet.frame_index,
+                            timestamp_ms=packet.timestamp_ms,
+                            frame_width=metadata.width,
+                            frame_height=metadata.height,
+                        )
                         active_events = [
                             event
                             for event in events
@@ -157,6 +214,11 @@ class Pipeline:
                             active_events,
                             timestamp_ms=packet.timestamp_ms,
                             trails=trails,
+                            mode=quality.overlay_mode,
+                            active_ceiling=quality.active_track_ceiling,
+                            playing_area=quality.playing_area.polygon or None,
+                            rejected=rejected_detections,
+                            banner_duration_ms=quality.banner_duration_ms,
                         )
                         overlay_seconds += perf_counter() - timer
                     except Exception as error:
@@ -197,6 +259,12 @@ class Pipeline:
                 else 0.0,
                 "tracking_seconds": round(tracking_seconds, 4),
                 "overlay_seconds": round(overlay_seconds, 4),
+                "raw_person_detections": raw_person_detections,
+                "pitch_filtered_person_detections": pitch_filtered_person_detections,
+                "rejected_spectator_detections": rejected_spectator_detections,
+                "peak_confirmed_person_tracks": peak_confirmed_person_tracks,
+                "overlay_mode": quality.overlay_mode,
+                "detector": type(self.detector).__name__,
             }
             completed = self.repository.complete_or_stop(
                 job_id, output_path=str(final_output), metrics=metrics
