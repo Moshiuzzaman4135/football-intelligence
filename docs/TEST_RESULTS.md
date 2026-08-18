@@ -81,3 +81,9 @@ Fresh image checks:
 - Real MinIO integration: 1 passed using a 16 MiB first part plus tail, presigned PUTs, resumed S3 part listing, ETag completion, streamed SHA-256 validation, object existence, job creation, and cleanup.
 - The rebuilt backend and pinned MinIO were healthy in Compose. Because the existing baseline container already owned loopback port 8010, the isolated worktree backend was verified on 18010; live create/presign/abort returned a host-visible MinIO URL and cleaned up successfully.
 - Complete protected suite: 122 passed, one opt-in MinIO test skipped by default, and the known non-failing Starlette `TestClient` deprecation warning.
+
+## Full-match multipart recovery fix — 2026-08-18
+
+- Durable SQLAlchemy upload-session, restart, two-instance CAS, ambiguous S3 completion, deterministic job commit replay, per-upload concurrency, expiry cleanup/retry, atomic filesystem, signed length/checksum, S3 error, API lifecycle, settings, and migration coverage passed.
+- Real MinIO integration passed with distinct application credentials, rejected an oversized signed PUT, resumed parts, completed and validated the source, and finally aborted/deleted storage safely.
+- Complete protected suite: 144 passed, one opt-in MinIO test skipped by default, and the known non-failing Starlette `TestClient` deprecation warning.

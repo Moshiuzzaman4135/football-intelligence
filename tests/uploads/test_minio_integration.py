@@ -36,10 +36,37 @@ def test_real_minio_multipart_upload_is_resumable_and_validated(tmp_path: Path):
     )
 
     try:
-        first_url = service.presign_part(upload.id, "integration-operator", 1).url
-        second_url = service.presign_part(upload.id, "integration-operator", 2).url
-        first_response = requests.put(first_url, data=first_body, timeout=30)
-        second_response = requests.put(second_url, data=second_body, timeout=30)
+        first_presign = service.presign_part(
+            upload.id,
+            "integration-operator",
+            1,
+            checksum_sha256=sha256(first_body).hexdigest(),
+        )
+        second_presign = service.presign_part(
+            upload.id,
+            "integration-operator",
+            2,
+            checksum_sha256=sha256(second_body).hexdigest(),
+        )
+        oversize_response = requests.put(
+            first_presign.url,
+            data=first_body + b"x",
+            headers=first_presign.required_headers,
+            timeout=30,
+        )
+        assert oversize_response.status_code in {400, 403}
+        first_response = requests.put(
+            first_presign.url,
+            data=first_body,
+            headers=first_presign.required_headers,
+            timeout=30,
+        )
+        second_response = requests.put(
+            second_presign.url,
+            data=second_body,
+            headers=second_presign.required_headers,
+            timeout=30,
+        )
         first_response.raise_for_status()
         second_response.raise_for_status()
 
@@ -57,5 +84,7 @@ def test_real_minio_multipart_upload_is_resumable_and_validated(tmp_path: Path):
         assert job.source_path == f"s3://{store.bucket}/{upload.object_key}"
         assert store.object_exists(upload.object_key)
     finally:
+        record = service.upload_store.get(upload.id)
+        store.abort_multipart(record.storage_upload_id, record.object_key)
         if store.object_exists(upload.object_key):
             store.delete_object(upload.object_key)

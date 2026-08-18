@@ -1,10 +1,12 @@
 from hashlib import sha256
 from pathlib import Path
+from threading import Event
 
 from fastapi.testclient import TestClient
 
 from football_intelligence.api import create_app
 from football_intelligence.object_store import InMemoryObjectStore
+from football_intelligence.settings import Settings
 from football_intelligence.storage import JobRepository
 from football_intelligence.uploads import MultipartUploadService
 
@@ -29,9 +31,11 @@ def test_multipart_api_create_presign_resume_complete_and_abort(tmp_path: Path):
         )
         upload = created.json()
         presigned = client.post(
-            f"/uploads/{upload['id']}/parts/1/presign", headers=owner
+            f"/uploads/{upload['id']}/parts/1/presign",
+            headers=owner,
+            json={"checksum_sha256": sha256(body).hexdigest()},
         )
-        session = uploads.get_upload(upload["id"], "operator-1")
+        session = uploads.upload_store.get(upload["id"])
         stored = objects.upload_part(
             session.storage_upload_id, session.object_key, 1, body
         )
@@ -58,6 +62,7 @@ def test_multipart_api_create_presign_resume_complete_and_abort(tmp_path: Path):
     assert presigned.status_code == 200
     assert presigned.json()["expected_size_bytes"] == len(body)
     assert presigned.json()["url"].startswith("memory://")
+    assert presigned.json()["required_headers"]["Content-Length"] == str(len(body))
     assert resumed.json()["uploaded_parts"] == [
         {
             "part_number": 1,
@@ -104,3 +109,26 @@ def test_multipart_api_enforces_owner_and_maps_validation_errors(tmp_path: Path)
     assert unsupported.status_code == 422
     assert forbidden.status_code == 403
     assert missing.status_code == 404
+
+
+def test_app_lifespan_schedules_expired_upload_cleanup(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.db")
+    uploads = MultipartUploadService(
+        object_store=InMemoryObjectStore(), job_store=repository
+    )
+    cleaned = Event()
+
+    def cleanup_expired(**_kwargs):
+        cleaned.set()
+        return 0
+
+    uploads.cleanup_expired = cleanup_expired
+    app = create_app(
+        repository=repository,
+        data_root=tmp_path,
+        upload_service=uploads,
+        settings=Settings(_env_file=None, upload_cleanup_interval_seconds=0.01),
+    )
+
+    with TestClient(app):
+        assert cleaned.wait(timeout=1)

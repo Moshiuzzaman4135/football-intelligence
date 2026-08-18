@@ -29,6 +29,15 @@ def test_job_creation_has_safe_defaults(repository):
     assert repository.get(job.id) == job
 
 
+def test_create_with_id_is_idempotent_for_upload_delivery(repository):
+    first = repository.create_with_id("upload-1", "/objects/source.mp4", "match.mp4")
+    replay = repository.create_with_id("upload-1", "/objects/source.mp4", "match.mp4")
+
+    assert first == replay
+    assert first.id == "upload-1"
+    assert repository.list() == [first]
+
+
 def test_job_state_machine_allows_normal_completion(repository):
     job = repository.create("/clips/match.mp4", "match.mp4")
 

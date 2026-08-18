@@ -1,8 +1,8 @@
 """Durable repositories and compare-and-set stage operations."""
 
 from football_intelligence.persistence.legacy_import import ImportResult, import_legacy_sqlite
-from football_intelligence.persistence.protocols import JobStore, StageStore
-from football_intelligence.persistence.records import StageRecord
+from football_intelligence.persistence.protocols import JobStore, StageStore, UploadStore
+from football_intelligence.persistence.records import StageRecord, UploadRecord
 from football_intelligence.persistence.sqlalchemy import (
     RawObservationPersistenceError,
     SQLAlchemyJobRepository,
@@ -19,6 +19,11 @@ from football_intelligence.persistence.stages import (
     fail_stage,
     retry_stage,
 )
+from football_intelligence.persistence.uploads import (
+    InMemoryUploadRepository,
+    SQLAlchemyUploadRepository,
+    UploadRecordNotFound,
+)
 
 __all__ = [
     "JobStore",
@@ -30,6 +35,11 @@ __all__ = [
     "StageConflict",
     "StageRecord",
     "StageStore",
+    "UploadStore",
+    "UploadRecord",
+    "UploadRecordNotFound",
+    "InMemoryUploadRepository",
+    "SQLAlchemyUploadRepository",
     "checkpoint_stage",
     "claim_stage",
     "complete_stage",

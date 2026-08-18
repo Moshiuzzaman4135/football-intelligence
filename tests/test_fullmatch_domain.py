@@ -179,6 +179,20 @@ def test_upload_session_enforces_full_match_quota_and_part_size(size_bytes, part
         )
 
 
+def test_upload_session_has_no_job_before_verified_completion():
+    upload = UploadSession(
+        id="upload-1",
+        object_key="uploads/upload-1/source.mp4",
+        original_filename="match.mp4",
+        size_bytes=16 * 1024 * 1024,
+        part_size_bytes=16 * 1024 * 1024,
+        checksum_sha256="b" * 64,
+    )
+
+    assert upload.job_id is None
+    assert "storage_upload_id" not in upload.model_dump()
+
+
 def test_football_event_round_trips_full_match_metadata_without_changing_legacy_fields():
     review = EventReview(
         event_id="event-1",

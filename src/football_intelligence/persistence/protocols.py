@@ -15,14 +15,19 @@ from football_intelligence.domain import (
     StageStatus,
     TrackObservation,
     TrackSummary,
+    UploadStatus,
     VideoMetadata,
 )
-from football_intelligence.persistence.records import StageRecord
+from football_intelligence.persistence.records import StageRecord, UploadRecord
 
 
 @runtime_checkable
 class JobStore(Protocol):
     def create(self, source_path: str, original_filename: str) -> JobRecord: ...
+
+    def create_with_id(
+        self, job_id: str, source_path: str, original_filename: str
+    ) -> JobRecord: ...
 
     def get(self, job_id: str) -> JobRecord: ...
 
@@ -86,3 +91,21 @@ class StageStore(Protocol):
         expected_lease_owner: str | None = None,
         lease_valid_at: datetime | None = None,
     ) -> StageRecord | None: ...
+
+
+@runtime_checkable
+class UploadStore(Protocol):
+    def create(self, upload: UploadRecord) -> UploadRecord: ...
+
+    def get(self, upload_id: str) -> UploadRecord: ...
+
+    def compare_and_set(
+        self,
+        upload_id: str,
+        *,
+        expected_status: UploadStatus,
+        expected_version: int,
+        values: dict[str, object],
+    ) -> UploadRecord | None: ...
+
+    def list_expired(self, *, now: datetime, limit: int) -> list[UploadRecord]: ...

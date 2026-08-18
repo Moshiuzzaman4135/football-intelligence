@@ -41,6 +41,16 @@ class StageStatus(StrEnum):
     STOPPED = "stopped"
 
 
+class UploadStatus(StrEnum):
+    ACTIVE = "active"
+    COMPLETING = "completing"
+    VALIDATED = "validated"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    ABORTED = "aborted"
+    EXPIRED = "expired"
+
+
 class EventStatus(StrEnum):
     CANDIDATE = "candidate"
     CONFIRMED = "confirmed"
@@ -176,14 +186,25 @@ class Artifact(BaseModel):
     size_bytes: int = Field(ge=0)
 
 
+class UploadPart(BaseModel):
+    part_number: int = Field(ge=1)
+    size_bytes: int = Field(ge=0)
+    etag: str = Field(min_length=1)
+    checksum_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
 class UploadSession(BaseModel):
     id: str = Field(min_length=1)
-    job_id: str = Field(min_length=1)
+    job_id: str | None = Field(default=None, min_length=1)
     object_key: str = Field(min_length=1)
     original_filename: str = Field(min_length=1)
     size_bytes: int = Field(gt=0, le=12 * 1024**3)
     part_size_bytes: Literal[16 * 1024 * 1024]
     checksum_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expires_at: datetime | None = None
+    status: UploadStatus = UploadStatus.ACTIVE
+    version: int = Field(default=0, ge=0)
+    uploaded_parts: list[UploadPart] = Field(default_factory=list)
 
 
 class EventReview(BaseModel):

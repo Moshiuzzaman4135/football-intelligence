@@ -54,9 +54,14 @@ class SQLAlchemyJobRepository:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
 
     def create(self, source_path: str, original_filename: str) -> JobRecord:
+        return self.create_with_id(str(uuid4()), source_path, original_filename)
+
+    def create_with_id(
+        self, job_id: str, source_path: str, original_filename: str
+    ) -> JobRecord:
         now = datetime.now(UTC)
         row = JobRow(
-            id=str(uuid4()),
+            id=job_id,
             source_path=source_path,
             original_filename=original_filename,
             status=JobStatus.CREATED.value,
@@ -66,8 +71,19 @@ class SQLAlchemyJobRepository:
             updated_at=now,
             version=0,
         )
-        with self._sessions.begin() as session:
-            session.add(row)
+        try:
+            with self._sessions.begin() as session:
+                session.add(row)
+        except IntegrityError:
+            existing = self.get(job_id)
+            if (
+                existing.source_path != source_path
+                or existing.original_filename != original_filename
+            ):
+                raise InvalidJobTransition(
+                    f"job id {job_id} belongs to another source"
+                ) from None
+            return existing
         return _job_record(row)
 
     def get(self, job_id: str) -> JobRecord:

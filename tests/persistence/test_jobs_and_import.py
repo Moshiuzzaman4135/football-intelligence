@@ -53,6 +53,16 @@ def test_sqlalchemy_job_repository_preserves_job_store_behavior(tmp_path: Path):
     assert repository.list() == [completed]
 
 
+def test_sqlalchemy_job_create_with_id_is_idempotent(tmp_path: Path):
+    repository = _new_repository(tmp_path / "production.db")
+
+    first = repository.create_with_id("upload-1", "s3://media/source.mp4", "match.mp4")
+    replay = repository.create_with_id("upload-1", "s3://media/source.mp4", "match.mp4")
+
+    assert first == replay
+    assert repository.list() == [first]
+
+
 def test_concurrent_job_transitions_use_compare_and_set(tmp_path: Path):
     repository = _new_repository(tmp_path / "production.db")
     job = repository.create("/clips/match.mp4", "match.mp4")

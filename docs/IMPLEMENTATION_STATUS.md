@@ -2,7 +2,7 @@
 
 ## LAST VERIFIED STATE
 
-The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Tasks 1-2 provide normalized domain/chunk contracts plus durable SQLAlchemy job/stage stores, atomic lease-aware compare-and-set versions, a default three-attempt cap, delivery-bound idempotent completion, monotonic checkpoints, reversible Alembic migrations requiring `FOOTBALL_DATABASE_URL`, and a read-only/repeatable importer for the original SQLite repository. Task 3 adds direct-to-object-store resumable multipart upload with 16 MiB parts, a 12 GiB cap, opaque keys, owner/expiry enforcement, ETag and streamed SHA-256 validation, delayed job creation, local adapters, and a real S3/MinIO adapter. The protected suite is now 122 passing tests plus one opt-in MinIO integration test.
+The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Tasks 1-2 provide normalized domain/chunk contracts plus durable SQLAlchemy job/stage stores, atomic lease-aware compare-and-set versions, a default three-attempt cap, delivery-bound idempotent completion, monotonic checkpoints, reversible Alembic migrations requiring `FOOTBALL_DATABASE_URL`, and a read-only/repeatable importer for the original SQLite repository. Task 3 adds restart-safe SQL upload sessions, direct-to-object-store resumable multipart upload with 16 MiB parts, a 12 GiB cap, opaque keys, owner/expiry enforcement, ETag and streamed SHA-256 validation, deterministic delayed job creation, local adapters, and a real S3/MinIO adapter. The protected suite is now 144 passing tests plus one opt-in MinIO integration test.
 
 ## CURRENT MILESTONE
 
@@ -29,7 +29,7 @@ Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch
 
 ## LAST SUCCESSFUL COMMAND
 
-`docker compose run --rm --no-deps -v "$PWD:/app" -e FOOTBALL_OBJECT_STORE_BACKEND=filesystem backend pytest -q` completed with 122 passed, one opt-in integration test skipped, and one known non-failing Starlette `TestClient` deprecation warning.
+`docker compose run --rm --no-deps -v "$PWD:/app" -e FOOTBALL_OBJECT_STORE_BACKEND=filesystem backend pytest -q` completed with 144 passed, one opt-in integration test skipped, and one known non-failing Starlette `TestClient` deprecation warning.
 
 ## NEXT EXACT ACTION
 
@@ -67,7 +67,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 - Fresh non-root Docker backend/UI healthy at `127.0.0.1:8010`/`127.0.0.1:8510`; ports are loopback-only; upload/start completed, events/summaries returned, artifact endpoint HTTP 200.
 - Final rebuilt-image artifact FFprobe: H.264, 640x360, 10 FPS, 300 frames, 30.000 seconds.
 - Full-match Task 1 review fixes focused contracts/chunks: 25 passed in 0.13 seconds; complete suite: 89 passed in 2.16 seconds with the known non-failing Starlette `TestClient` deprecation warning; Ruff and `git diff --check` clean.
-- Full-match Task 3 focused settings/upload suite: 12 passed; live MinIO multipart integration: 1 passed; complete suite: 122 passed and one opt-in integration test skipped.
+- Full-match Task 3 recovery-focused upload/persistence suite: 77 passed and one opt-in integration skipped; live MinIO multipart integration: 1 passed; complete suite: 144 passed and one opt-in integration test skipped.
 
 ## KNOWN FAILURES
 
@@ -78,7 +78,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 
 ## KNOWN LIMITATIONS
 
-The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; retention/pagination is future work. Team classification, RTSP ingestion, pitch calibration/radar, OCR/audio/VLM evidence, action spotting, and model-based event fusion are not implemented. Multipart session coordination is process-local in Task 3; object parts survive in MinIO, but API restart recovery requires a durable upload-session repository in a later hardening task. Authentication arrives in Task 9, so `X-Owner-ID` is only the current ownership seam and nonlocal exposure remains unsupported. No lockfile or remote heavy-model benchmark exists yet.
+The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; retention/pagination is future work. Team classification, RTSP ingestion, pitch calibration/radar, OCR/audio/VLM evidence, action spotting, and model-based event fusion are not implemented. Authentication arrives in Task 9, so `X-Owner-ID` is only the current ownership seam and nonlocal exposure remains unsupported. MinIO should have an operator-managed incomplete-multipart lifecycle rule longer than the 24-hour application expiry; completed sources must not use that expiry rule. No lockfile or remote heavy-model benchmark exists yet.
 
 ## BLOCKERS
 

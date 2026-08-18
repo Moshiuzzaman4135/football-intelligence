@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -70,3 +79,36 @@ class JobMetadataRow(Base):
     source_json: Mapped[str | None] = mapped_column(Text)
     output_json: Mapped[str | None] = mapped_column(Text)
     model_json: Mapped[str | None] = mapped_column(Text)
+
+
+class UploadRow(Base):
+    __tablename__ = "upload_sessions"
+    __table_args__ = (
+        Index("ix_upload_sessions_expiry", "status", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_upload_id: Mapped[str] = mapped_column(Text, nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    original_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    part_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    planned_job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    completion_parts_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    validated_parts_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    object_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    object_checksum_sha256: Mapped[str | None] = mapped_column(String(64))
+    object_etag: Mapped[str | None] = mapped_column(Text)
+    job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    cleanup_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

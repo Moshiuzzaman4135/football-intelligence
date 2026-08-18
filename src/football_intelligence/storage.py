@@ -98,23 +98,36 @@ class JobRepository:
             )
 
     def create(self, source_path: str, original_filename: str) -> JobRecord:
+        return self.create_with_id(str(uuid4()), source_path, original_filename)
+
+    def create_with_id(
+        self, job_id: str, source_path: str, original_filename: str
+    ) -> JobRecord:
         now = datetime.now(UTC)
         job = JobRecord(
-            id=str(uuid4()),
+            id=job_id,
             source_path=source_path,
             original_filename=original_filename,
             created_at=now,
             updated_at=now,
         )
         with self._connect() as connection:
-            connection.execute(
-                """INSERT INTO jobs
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO jobs
                 (id, source_path, original_filename, status, progress, output_path, error,
                  metrics_json, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 self._job_values(job),
             )
-        return job
+        if cursor.rowcount == 1:
+            return job
+        existing = self.get(job_id)
+        if (
+            existing.source_path != source_path
+            or existing.original_filename != original_filename
+        ):
+            raise InvalidJobTransition(f"job id {job_id} belongs to another source")
+        return existing
 
     def get(self, job_id: str) -> JobRecord:
         with self._connect() as connection:

@@ -1,9 +1,9 @@
 """FastAPI lifecycle and artifact API."""
 
+import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
-from datetime import datetime
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from threading import BoundedSemaphore
 from typing import Annotated, Any
@@ -15,20 +15,25 @@ from pydantic import BaseModel, Field
 
 from football_intelligence.bus import EventBus
 from football_intelligence.detection.factory import build_detector
-from football_intelligence.domain import JobRecord, JobStatus
+from football_intelligence.domain import JobRecord, JobStatus, UploadSession
 from football_intelligence.object_store import (
     FilesystemObjectStore,
+    MultipartPresignUnsupported,
     S3ObjectStore,
-    UploadedPart,
 )
-from football_intelligence.persistence import JobStore
+from football_intelligence.persistence import (
+    JobStore,
+    SQLAlchemyJobRepository,
+    SQLAlchemyUploadRepository,
+    UploadStore,
+    create_persistence_engine,
+)
 from football_intelligence.pipeline import Pipeline
 from football_intelligence.settings import Settings
 from football_intelligence.storage import InvalidJobTransition, JobNotFound, JobRepository
 from football_intelligence.tracking.iou import IoUTracker
 from football_intelligence.uploads import (
     CompletedPart,
-    MultipartUpload,
     MultipartUploadService,
     PresignedPart,
     UploadConflict,
@@ -51,21 +56,8 @@ class CompleteMultipartUploadRequest(BaseModel):
     parts: list[CompletedPart] = Field(min_length=1)
 
 
-class MultipartUploadResponse(BaseModel):
-    id: str
-    original_filename: str
-    object_key: str
-    size_bytes: int
-    part_size_bytes: int
-    checksum_sha256: str
-    expires_at: datetime
-    status: str
-    job_id: str | None
-    uploaded_parts: list[UploadedPart]
-
-
-def _public_upload(upload: MultipartUpload) -> MultipartUploadResponse:
-    return MultipartUploadResponse.model_validate(upload, from_attributes=True)
+class PresignMultipartPartRequest(BaseModel):
+    checksum_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def create_app(
@@ -76,6 +68,7 @@ def create_app(
     settings: Settings | None = None,
     max_pending_jobs: int = 4,
     upload_service: MultipartUploadService | None = None,
+    upload_store: UploadStore | None = None,
 ) -> FastAPI:
     root = Path(data_root)
     upload_dir = root / "uploads"
@@ -88,6 +81,8 @@ def create_app(
     runtime_settings = settings or Settings()
     if upload_service is None:
         if runtime_settings.object_store_backend == "s3":
+            if upload_store is None:
+                raise ValueError("S3 multipart runtime requires a durable upload store")
             object_store = S3ObjectStore(
                 bucket=runtime_settings.s3_bucket,
                 endpoint_url=runtime_settings.s3_endpoint_url,
@@ -102,7 +97,9 @@ def create_app(
         else:
             object_store = FilesystemObjectStore(root / "object-store")
         upload_service = MultipartUploadService(
-            object_store=object_store, job_store=repository
+            object_store=object_store,
+            job_store=repository,
+            upload_store=upload_store,
         )
 
     if pipeline_factory is None:
@@ -123,8 +120,19 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
-        executor.shutdown(wait=False, cancel_futures=False)
+        async def cleanup_uploads() -> None:
+            while True:
+                await asyncio.sleep(runtime_settings.upload_cleanup_interval_seconds)
+                await asyncio.to_thread(upload_service.cleanup_expired)
+
+        cleanup_task = asyncio.create_task(cleanup_uploads())
+        try:
+            yield
+        finally:
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
+            executor.shutdown(wait=False, cancel_futures=False)
 
     application = FastAPI(
         title="Football Video Intelligence",
@@ -177,15 +185,17 @@ def create_app(
             return HTTPException(status_code=410, detail=str(error))
         if isinstance(error, UploadConflict):
             return HTTPException(status_code=409, detail=str(error))
+        if isinstance(error, MultipartPresignUnsupported):
+            return HTTPException(status_code=503, detail=str(error))
         return HTTPException(status_code=422, detail=str(error))
 
     @application.post(
-        "/uploads", response_model=MultipartUploadResponse, status_code=201
+        "/uploads", response_model=UploadSession, status_code=201
     )
     def create_multipart_upload(
         request: CreateMultipartUploadRequest,
         owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
-    ) -> MultipartUploadResponse:
+    ) -> UploadSession:
         try:
             upload = upload_service.create_upload(
                 owner_id=owner_id,
@@ -195,7 +205,7 @@ def create_app(
             )
         except ValueError as error:
             raise multipart_error(error) from error
-        return _public_upload(upload)
+        return upload
 
     @application.post(
         "/uploads/{upload_id}/parts/{part_number}/presign",
@@ -204,26 +214,33 @@ def create_app(
     def presign_multipart_part(
         upload_id: str,
         part_number: int,
+        request: PresignMultipartPartRequest,
         owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
     ) -> PresignedPart:
         try:
-            return upload_service.presign_part(upload_id, owner_id, part_number)
+            return upload_service.presign_part(
+                upload_id,
+                owner_id,
+                part_number,
+                checksum_sha256=request.checksum_sha256,
+            )
         except (
             ValueError,
             UploadNotFound,
             UploadForbidden,
             UploadExpired,
             UploadConflict,
+            MultipartPresignUnsupported,
         ) as error:
             raise multipart_error(error) from error
 
-    @application.get("/uploads/{upload_id}", response_model=MultipartUploadResponse)
+    @application.get("/uploads/{upload_id}", response_model=UploadSession)
     def read_multipart_upload(
         upload_id: str,
         owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
-    ) -> MultipartUploadResponse:
+    ) -> UploadSession:
         try:
-            return _public_upload(upload_service.get_upload(upload_id, owner_id))
+            return upload_service.get_upload(upload_id, owner_id)
         except (UploadNotFound, UploadForbidden, UploadExpired, UploadConflict) as error:
             raise multipart_error(error) from error
 
@@ -347,8 +364,16 @@ def create_app(
 DEFAULT_SETTINGS = Settings()
 DEFAULT_DATA_ROOT = DEFAULT_SETTINGS.data_root.resolve()
 DEFAULT_DATABASE = DEFAULT_DATA_ROOT / "db" / "football_intelligence.db"
+if DEFAULT_SETTINGS.database_url:
+    DEFAULT_ENGINE = create_persistence_engine(DEFAULT_SETTINGS.database_url)
+    DEFAULT_REPOSITORY = SQLAlchemyJobRepository(DEFAULT_ENGINE)
+    DEFAULT_UPLOAD_STORE = SQLAlchemyUploadRepository(DEFAULT_ENGINE)
+else:
+    DEFAULT_REPOSITORY = JobRepository(DEFAULT_DATABASE)
+    DEFAULT_UPLOAD_STORE = None
 app = create_app(
-    repository=JobRepository(DEFAULT_DATABASE),
+    repository=DEFAULT_REPOSITORY,
     data_root=DEFAULT_DATA_ROOT,
     settings=DEFAULT_SETTINGS,
+    upload_store=DEFAULT_UPLOAD_STORE,
 )

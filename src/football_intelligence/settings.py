@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     model_name: str = "yolo11n.pt"
     device: str = "auto"
     max_frame_errors: int = Field(default=10, ge=0, le=1000)
+    database_url: str = ""
+    upload_cleanup_interval_seconds: float = Field(default=300, ge=0.01)
     object_store_backend: Literal["filesystem", "s3"] = "filesystem"
     s3_endpoint_url: str = ""
     s3_public_endpoint_url: str = ""
@@ -38,4 +40,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "S3 object storage requires endpoint, access key, secret key, and bucket"
             )
+        if self.object_store_backend == "s3" and not self.database_url:
+            raise ValueError("S3 object storage requires a durable database URL")
         return self

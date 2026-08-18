@@ -25,6 +25,10 @@ def upload_system(tmp_path: Path):
     return service, objects, jobs
 
 
+def _private(service, upload):
+    return service.upload_store.get(upload.id)
+
+
 def test_create_upload_validates_quota_extension_and_uses_opaque_key(upload_system):
     service, _, _ = upload_system
 
@@ -67,18 +71,33 @@ def test_presign_enforces_ownership_part_range_and_expiry(upload_system):
         expires_in=timedelta(minutes=5),
     )
 
-    part = service.presign_part(upload.id, "operator-1", 2, now=now)
+    part = service.presign_part(
+        upload.id, "operator-1", 2, checksum_sha256="b" * 64, now=now
+    )
 
     assert part.part_number == 2
     assert part.expected_size_bytes == 3
     assert part.url.startswith("memory://")
+    assert part.required_headers["Content-Length"] == "3"
+    assert "x-amz-checksum-sha256" in part.required_headers
     with pytest.raises(UploadForbidden):
-        service.presign_part(upload.id, "operator-2", 1, now=now)
+        service.presign_part(
+            upload.id, "operator-2", 1, checksum_sha256="b" * 64, now=now
+        )
     with pytest.raises(ValueError, match="part number"):
-        service.presign_part(upload.id, "operator-1", 3, now=now)
+        service.presign_part(
+            upload.id, "operator-1", 3, checksum_sha256="b" * 64, now=now
+        )
     with pytest.raises(UploadExpired):
-        service.presign_part(upload.id, "operator-1", 1, now=now + timedelta(minutes=5))
-    assert objects.list_parts(upload.storage_upload_id, upload.object_key) == []
+        service.presign_part(
+            upload.id,
+            "operator-1",
+            1,
+            checksum_sha256="b" * 64,
+            now=now + timedelta(minutes=5),
+        )
+    private = _private(service, upload)
+    assert objects.list_parts(private.storage_upload_id, private.object_key) == []
 
 
 def test_resume_and_complete_validate_etag_checksum_then_create_job(upload_system):
@@ -90,7 +109,10 @@ def test_resume_and_complete_validate_etag_checksum_then_create_job(upload_syste
         size_bytes=len(body),
         checksum_sha256=sha256(body).hexdigest(),
     )
-    stored_part = objects.upload_part(upload.storage_upload_id, upload.object_key, 1, body)
+    private = _private(service, upload)
+    stored_part = objects.upload_part(
+        private.storage_upload_id, private.object_key, 1, body
+    )
 
     resumed = service.get_upload(upload.id, "operator-1")
     assert resumed.uploaded_parts == [stored_part]
@@ -117,7 +139,10 @@ def test_complete_rejects_wrong_etag_or_checksum_without_creating_job(upload_sys
         size_bytes=len(body),
         checksum_sha256="0" * 64,
     )
-    stored_part = objects.upload_part(upload.storage_upload_id, upload.object_key, 1, body)
+    private = _private(service, upload)
+    stored_part = objects.upload_part(
+        private.storage_upload_id, private.object_key, 1, body
+    )
 
     with pytest.raises(UploadConflict, match="ETag"):
         service.complete_upload(
@@ -147,11 +172,12 @@ def test_abort_and_expiry_remove_multipart_parts(upload_system):
         now=now,
         expires_in=timedelta(seconds=30),
     )
-    objects.upload_part(upload.storage_upload_id, upload.object_key, 1, b"data")
+    private = _private(service, upload)
+    objects.upload_part(private.storage_upload_id, private.object_key, 1, b"data")
 
     service.abort_upload(upload.id, "operator-1", now=now)
 
-    assert objects.list_parts(upload.storage_upload_id, upload.object_key) == []
+    assert objects.list_parts(private.storage_upload_id, private.object_key) == []
     with pytest.raises(UploadConflict, match="aborted"):
         service.get_upload(upload.id, "operator-1", now=now)
 
@@ -164,11 +190,11 @@ def test_validated_object_can_retry_transient_job_creation_without_reupload(tmp_
         def __init__(self):
             self.failed = False
 
-        def create(self, source_path, original_filename):
+        def create_with_id(self, job_id, source_path, original_filename):
             if not self.failed:
                 self.failed = True
                 raise RuntimeError("database temporarily unavailable")
-            return jobs.create(source_path, original_filename)
+            return jobs.create_with_id(job_id, source_path, original_filename)
 
         def get(self, job_id):
             return jobs.get(job_id)
@@ -183,7 +209,10 @@ def test_validated_object_can_retry_transient_job_creation_without_reupload(tmp_
         size_bytes=len(body),
         checksum_sha256=sha256(body).hexdigest(),
     )
-    stored = objects.upload_part(upload.storage_upload_id, upload.object_key, 1, body)
+    private = _private(service, upload)
+    stored = objects.upload_part(
+        private.storage_upload_id, private.object_key, 1, body
+    )
     completed_parts = [CompletedPart(part_number=1, etag=stored.etag)]
 
     with pytest.raises(RuntimeError, match="temporarily unavailable"):

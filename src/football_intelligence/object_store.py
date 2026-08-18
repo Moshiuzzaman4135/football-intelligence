@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+from base64 import b64decode, b64encode
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Protocol, runtime_checkable
 from uuid import uuid4
 
+from football_intelligence.domain import UploadPart
 
-@dataclass(frozen=True)
-class UploadedPart:
-    part_number: int
-    size_bytes: int
-    etag: str
-    checksum_sha256: str | None = None
+UploadedPart = UploadPart
 
 
 @dataclass(frozen=True)
@@ -25,6 +23,22 @@ class StoredObject:
     size_bytes: int
     etag: str
     uri: str
+
+
+class MultipartUploadNotFound(RuntimeError):
+    pass
+
+
+class MultipartCompletionUncertain(RuntimeError):
+    pass
+
+
+class MultipartPresignUnsupported(RuntimeError):
+    pass
+
+
+class ObjectNotFound(RuntimeError):
+    pass
 
 
 @runtime_checkable
@@ -39,6 +53,9 @@ class ObjectStore(Protocol):
         object_key: str,
         part_number: int,
         expires_seconds: int,
+        *,
+        expected_size_bytes: int,
+        checksum_sha256: str,
     ) -> str: ...
 
     def list_parts(self, storage_upload_id: str, object_key: str) -> list[UploadedPart]: ...
@@ -55,6 +72,8 @@ class ObjectStore(Protocol):
     def delete_object(self, object_key: str) -> None: ...
 
     def object_exists(self, object_key: str) -> bool: ...
+
+    def stat_object(self, object_key: str) -> StoredObject: ...
 
     def iter_object(self, object_key: str, chunk_size: int = 1024 * 1024) -> Iterator[bytes]: ...
 
@@ -87,7 +106,11 @@ class InMemoryObjectStore:
         object_key: str,
         part_number: int,
         expires_seconds: int,
+        *,
+        expected_size_bytes: int,
+        checksum_sha256: str,
     ) -> str:
+        del expected_size_bytes, checksum_sha256
         self._get_upload(storage_upload_id, object_key)
         return (
             f"memory://uploads/{storage_upload_id}/parts/{part_number}"
@@ -125,7 +148,10 @@ class InMemoryObjectStore:
         object_key: str,
         parts: list[UploadedPart],
     ) -> StoredObject:
-        upload = self._get_upload(storage_upload_id, object_key)
+        try:
+            upload = self._get_upload(storage_upload_id, object_key)
+        except KeyError as error:
+            raise MultipartUploadNotFound(storage_upload_id) from error
         body = b"".join(upload.parts[part.part_number][1] for part in parts)
         self._objects[object_key] = body
         del self._uploads[storage_upload_id]
@@ -147,6 +173,18 @@ class InMemoryObjectStore:
 
     def object_exists(self, object_key: str) -> bool:
         return object_key in self._objects
+
+    def stat_object(self, object_key: str) -> StoredObject:
+        try:
+            body = self._objects[object_key]
+        except KeyError as error:
+            raise ObjectNotFound(object_key) from error
+        return StoredObject(
+            object_key=object_key,
+            size_bytes=len(body),
+            etag=hashlib.md5(body, usedforsecurity=False).hexdigest(),
+            uri=self.object_uri(object_key),
+        )
 
     def iter_object(self, object_key: str, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
         body = self._objects[object_key]
@@ -191,11 +229,14 @@ class FilesystemObjectStore:
         object_key: str,
         part_number: int,
         expires_seconds: int,
+        *,
+        expected_size_bytes: int,
+        checksum_sha256: str,
     ) -> str:
+        del part_number, expires_seconds, expected_size_bytes, checksum_sha256
         self._upload_path(storage_upload_id, object_key)
-        return (
-            f"file://{self.parts_root / storage_upload_id / f'{part_number}.part'}"
-            f"?expires={expires_seconds}"
+        raise MultipartPresignUnsupported(
+            "filesystem multipart presigns are test-only and unavailable over HTTP"
         )
 
     def upload_part(
@@ -207,16 +248,28 @@ class FilesystemObjectStore:
     ) -> UploadedPart:
         upload_path = self._upload_path(storage_upload_id, object_key)
         part_path = upload_path / f"{part_number}.part"
+        temporary_path = upload_path / f".{part_number}.{uuid4()}.tmp"
         checksum = hashlib.sha256()
         etag = hashlib.md5(usedforsecurity=False)
         size = 0
-        with part_path.open("wb") as target:
-            while chunk := body.read(1024 * 1024):
-                target.write(chunk)
-                checksum.update(chunk)
-                etag.update(chunk)
-                size += len(chunk)
-        return UploadedPart(part_number, size, etag.hexdigest(), checksum.hexdigest())
+        try:
+            with temporary_path.open("wb") as target:
+                while chunk := body.read(1024 * 1024):
+                    target.write(chunk)
+                    checksum.update(chunk)
+                    etag.update(chunk)
+                    size += len(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+            temporary_path.replace(part_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        return UploadedPart(
+            part_number=part_number,
+            size_bytes=size,
+            etag=etag.hexdigest(),
+            checksum_sha256=checksum.hexdigest(),
+        )
 
     def list_parts(self, storage_upload_id: str, object_key: str) -> list[UploadedPart]:
         try:
@@ -237,15 +290,22 @@ class FilesystemObjectStore:
         upload_path = self._upload_path(storage_upload_id, object_key)
         object_path = self._object_path(object_key)
         object_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = object_path.parent / f".{object_path.name}.{uuid4()}.tmp"
         checksum = hashlib.md5(usedforsecurity=False)
         size = 0
-        with object_path.open("wb") as target:
-            for part in parts:
-                with (upload_path / f"{part.part_number}.part").open("rb") as source:
-                    while chunk := source.read(1024 * 1024):
-                        target.write(chunk)
-                        checksum.update(chunk)
-                        size += len(chunk)
+        try:
+            with temporary_path.open("wb") as target:
+                for part in parts:
+                    with (upload_path / f"{part.part_number}.part").open("rb") as source:
+                        while chunk := source.read(1024 * 1024):
+                            target.write(chunk)
+                            checksum.update(chunk)
+                            size += len(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+            temporary_path.replace(object_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
         shutil.rmtree(upload_path)
         return StoredObject(object_key, size, checksum.hexdigest(), self.object_uri(object_key))
 
@@ -261,6 +321,18 @@ class FilesystemObjectStore:
 
     def object_exists(self, object_key: str) -> bool:
         return self._object_path(object_key).is_file()
+
+    def stat_object(self, object_key: str) -> StoredObject:
+        path = self._object_path(object_key)
+        if not path.is_file():
+            raise ObjectNotFound(object_key)
+        hashed = _hash_file(path, 1)
+        return StoredObject(
+            object_key=object_key,
+            size_bytes=hashed.size_bytes,
+            etag=hashed.etag,
+            uri=self.object_uri(object_key),
+        )
 
     def iter_object(self, object_key: str, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
         with self._object_path(object_key).open("rb") as source:
@@ -319,6 +391,7 @@ class S3ObjectStore:
         self.client = client
         self.presign_client = presign_client
         self.bucket = bucket
+        self.region = region
 
     def ensure_bucket(self) -> None:
         try:
@@ -327,9 +400,14 @@ class S3ObjectStore:
             response = getattr(error, "response", {})
             status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             code = response.get("Error", {}).get("Code")
-            if status not in {404, None} and code not in {"404", "NoSuchBucket"}:
+            if status != 404 and code not in {"404", "NoSuchBucket"}:
                 raise
-            self.client.create_bucket(Bucket=self.bucket)
+            request: dict[str, Any] = {"Bucket": self.bucket}
+            if self.region != "us-east-1":
+                request["CreateBucketConfiguration"] = {
+                    "LocationConstraint": self.region
+                }
+            self.client.create_bucket(**request)
 
     def create_multipart(self, object_key: str, content_type: str) -> str:
         _validate_object_key(object_key)
@@ -346,6 +424,9 @@ class S3ObjectStore:
         object_key: str,
         part_number: int,
         expires_seconds: int,
+        *,
+        expected_size_bytes: int,
+        checksum_sha256: str,
     ) -> str:
         _validate_object_key(object_key)
         return str(
@@ -356,6 +437,10 @@ class S3ObjectStore:
                     "Key": object_key,
                     "UploadId": storage_upload_id,
                     "PartNumber": part_number,
+                    "ContentLength": expected_size_bytes,
+                    "ChecksumSHA256": b64encode(
+                        bytes.fromhex(checksum_sha256)
+                    ).decode("ascii"),
                 },
                 ExpiresIn=expires_seconds,
             )
@@ -379,7 +464,11 @@ class S3ObjectStore:
                     part_number=int(item["PartNumber"]),
                     size_bytes=int(item["Size"]),
                     etag=str(item["ETag"]),
-                    checksum_sha256=item.get("ChecksumSHA256"),
+                    checksum_sha256=(
+                        b64decode(item["ChecksumSHA256"]).hex()
+                        if item.get("ChecksumSHA256")
+                        else None
+                    ),
                 )
                 for item in response.get("Parts", [])
             )
@@ -395,17 +484,28 @@ class S3ObjectStore:
         parts: list[UploadedPart],
     ) -> StoredObject:
         _validate_object_key(object_key)
-        response = self.client.complete_multipart_upload(
-            Bucket=self.bucket,
-            Key=object_key,
-            UploadId=storage_upload_id,
-            MultipartUpload={
-                "Parts": [
-                    {"PartNumber": part.part_number, "ETag": part.etag}
-                    for part in parts
-                ]
-            },
-        )
+        try:
+            response = self.client.complete_multipart_upload(
+                Bucket=self.bucket,
+                Key=object_key,
+                UploadId=storage_upload_id,
+                MultipartUpload={
+                    "Parts": [
+                        {"PartNumber": part.part_number, "ETag": part.etag}
+                        for part in parts
+                    ]
+                },
+            )
+        except Exception as error:
+            if _error_code(error) == "NoSuchUpload":
+                raise MultipartUploadNotFound(storage_upload_id) from error
+            if error.__class__.__name__ in {
+                "ConnectionClosedError",
+                "EndpointConnectionError",
+                "ReadTimeoutError",
+            }:
+                raise MultipartCompletionUncertain(storage_upload_id) from error
+            raise
         metadata = self.client.head_object(Bucket=self.bucket, Key=object_key)
         return StoredObject(
             object_key=object_key,
@@ -416,9 +516,13 @@ class S3ObjectStore:
 
     def abort_multipart(self, storage_upload_id: str, object_key: str) -> None:
         _validate_object_key(object_key)
-        self.client.abort_multipart_upload(
-            Bucket=self.bucket, Key=object_key, UploadId=storage_upload_id
-        )
+        try:
+            self.client.abort_multipart_upload(
+                Bucket=self.bucket, Key=object_key, UploadId=storage_upload_id
+            )
+        except Exception as error:
+            if _error_code(error) != "NoSuchUpload":
+                raise
 
     def delete_object(self, object_key: str) -> None:
         _validate_object_key(object_key)
@@ -437,6 +541,21 @@ class S3ObjectStore:
             raise
         return True
 
+    def stat_object(self, object_key: str) -> StoredObject:
+        _validate_object_key(object_key)
+        try:
+            metadata = self.client.head_object(Bucket=self.bucket, Key=object_key)
+        except Exception as error:
+            if _is_not_found(error):
+                raise ObjectNotFound(object_key) from error
+            raise
+        return StoredObject(
+            object_key=object_key,
+            size_bytes=int(metadata["ContentLength"]),
+            etag=str(metadata.get("ETag", "")),
+            uri=self.object_uri(object_key),
+        )
+
     def iter_object(self, object_key: str, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
         _validate_object_key(object_key)
         response = self.client.get_object(Bucket=self.bucket, Key=object_key)
@@ -451,6 +570,16 @@ def _validate_object_key(object_key: str) -> None:
     path = PurePosixPath(object_key)
     if path.is_absolute() or ".." in path.parts or not object_key:
         raise ValueError("object key must be an opaque relative key")
+
+
+def _error_code(error: Exception) -> str | None:
+    return getattr(error, "response", {}).get("Error", {}).get("Code")
+
+
+def _is_not_found(error: Exception) -> bool:
+    response = getattr(error, "response", {})
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return status == 404 or _error_code(error) in {"404", "NoSuchKey", "NotFound"}
 
 
 def _create_s3_client(
@@ -478,4 +607,9 @@ def _hash_file(path: Path, part_number: int) -> UploadedPart:
             checksum.update(chunk)
             etag.update(chunk)
             size += len(chunk)
-    return UploadedPart(part_number, size, etag.hexdigest(), checksum.hexdigest())
+    return UploadedPart(
+        part_number=part_number,
+        size_bytes=size,
+        etag=etag.hexdigest(),
+        checksum_sha256=checksum.hexdigest(),
+    )
