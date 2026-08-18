@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from threading import BoundedSemaphore, Lock
 from typing import Annotated, Any
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field
 from football_intelligence.bus import EventBus
 from football_intelligence.detection.factory import build_detector
 from football_intelligence.domain import JobRecord, JobStatus, ScoreboardRegion, UploadSession
-from football_intelligence.fullmatch.manifest import RunnerOptions
+from football_intelligence.fullmatch.manifest import RunnerOptions, RuntimeProvenance
 from football_intelligence.fullmatch.ocr import TesseractCliOcrEngine
 from football_intelligence.fullmatch.runner import FullMatchRunner
 from football_intelligence.object_store import (
@@ -132,6 +133,21 @@ def create_app(
     if full_match_runner_factory is None and runtime_object_store is not None:
 
         def full_match_runner_factory() -> FullMatchRunner:
+            detector_package = (
+                "opencv-python-headless"
+                if runtime_settings.detector == "color"
+                else "ultralytics"
+            )
+            try:
+                detector_version = version(detector_package)
+            except PackageNotFoundError:
+                detector_version = "not-installed"
+            ocr_engine = TesseractCliOcrEngine(str(runtime_settings.tessdata_dir))
+            detector_class = (
+                "football_intelligence.detection.color.ColorDetector"
+                if runtime_settings.detector == "color"
+                else "football_intelligence.detection.ultralytics.UltralyticsDetector"
+            )
             return FullMatchRunner(
                 repository=repository,
                 object_store=runtime_object_store,
@@ -143,7 +159,7 @@ def create_app(
                     device=runtime_settings.device,
                 ),
                 tracker_factory=IoUTracker,
-                ocr_engine=TesseractCliOcrEngine(str(runtime_settings.tessdata_dir)),
+                ocr_engine=ocr_engine,
                 options=RunnerOptions(
                     scoreboard_region=ScoreboardRegion(
                         x=runtime_settings.scoreboard_region_x,
@@ -151,6 +167,34 @@ def create_app(
                         width=runtime_settings.scoreboard_region_width,
                         height=runtime_settings.scoreboard_region_height,
                     )
+                ),
+                provenance=RuntimeProvenance(
+                    detector=detector_class,
+                    detector_model=(
+                        "deterministic-color"
+                        if runtime_settings.detector == "color"
+                        else runtime_settings.model_name
+                    ),
+                    detector_device=(
+                        "cpu"
+                        if runtime_settings.detector == "color"
+                        else runtime_settings.device
+                    ),
+                    detector_framework=detector_package,
+                    detector_version=detector_version,
+                    detector_config={"confidence": "0.25"},
+                    tracker="football_intelligence.tracking.iou.IoUTracker",
+                    tracker_config={
+                        "iou_threshold": "0.25",
+                        "max_missed": "8",
+                        "ball_max_distance": "50",
+                    },
+                    ocr_engine=(
+                        f"{type(ocr_engine).__module__}.{type(ocr_engine).__qualname__}"
+                    ),
+                    ocr_model=ocr_engine.model_name,
+                    ocr_version=ocr_engine.version,
+                    ocr_model_sha256=ocr_engine.model_sha256,
                 ),
                 max_frame_errors=runtime_settings.max_frame_errors,
             )
@@ -378,6 +422,13 @@ def create_app(
             runner = get_full_match_runner()
             if job.status is JobStatus.CREATED:
                 repository.transition(job_id, JobStatus.RUNNING)
+        except InvalidJobTransition as error:
+            with full_match_active_lock:
+                full_match_active.discard(job_id)
+            full_match_admission.release()
+            raise HTTPException(
+                status_code=409, detail="job start lost a concurrent lifecycle race"
+            ) from error
         except Exception:
             with full_match_active_lock:
                 full_match_active.discard(job_id)

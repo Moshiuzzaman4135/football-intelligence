@@ -5,11 +5,14 @@ import pytest
 
 from football_intelligence.fullmatch.media import (
     MAX_MATCH_DURATION_MS,
+    MediaCancelled,
     MediaProbe,
+    _media_probe_from_payload,
     build_proxy,
     localize_s3_source,
     parse_same_bucket_uri,
     probe_media,
+    run_media_command,
     validate_source_media,
 )
 
@@ -77,6 +80,36 @@ def test_failed_localization_leaves_no_visible_or_partial_source(tmp_path: Path)
     assert not (tmp_path / "source.partial").exists()
 
 
+def test_localization_cancellation_removes_partial_source(tmp_path: Path):
+    store = StreamingStore([b"partial", b"more"])
+
+    with pytest.raises(MediaCancelled):
+        localize_s3_source(
+            store,
+            "s3://football-media/uploads/opaque/source.mp4",
+            bucket="football-media",
+            destination_dir=tmp_path,
+            cancelled=lambda: True,
+        )
+
+    assert not (tmp_path / "source.mp4").exists()
+    assert not (tmp_path / "source.partial").exists()
+
+
+def test_media_command_can_be_cancelled_while_encoder_is_running():
+    checks = 0
+
+    def cancelled() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 2
+
+    with pytest.raises(MediaCancelled):
+        run_media_command(
+            ["python", "-c", "import time; time.sleep(5)"], cancelled=cancelled
+        )
+
+
 def test_source_validation_rejects_duration_and_unsupported_container():
     valid = MediaProbe(
         path="source.mp4",
@@ -134,3 +167,86 @@ def test_proxy_is_h264_capped_at_720p_25fps_and_preserves_audio(tmp_path: Path):
     assert metadata.duration_ms == pytest.approx(2000, abs=50)
     assert metadata.has_audio is True
     assert not (tmp_path / "proxy.partial.mp4").exists()
+
+
+def test_probe_falls_back_from_invalid_average_rate_and_derives_duration():
+    payload = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "h264",
+                "pix_fmt": "yuv420p",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "0/0",
+                "r_frame_rate": "30000/1001",
+                "nb_frames": "300",
+                "duration": "N/A",
+            }
+        ],
+        "format": {"format_name": "matroska", "duration": "N/A"},
+    }
+
+    probe = _media_probe_from_payload(Path("match.mkv"), payload)
+
+    assert probe.fps == pytest.approx(29.970, abs=0.001)
+    assert probe.frame_count == 300
+    assert probe.duration_ms == pytest.approx(10_010, abs=1)
+
+
+def test_probe_uses_average_rate_for_vfr_identity_and_counted_frames():
+    payload = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "h264",
+                "pix_fmt": "yuv420p",
+                "width": 1280,
+                "height": 720,
+                "avg_frame_rate": "20/1",
+                "r_frame_rate": "30/1",
+                "nb_read_frames": "40",
+                "duration": "2.0",
+            }
+        ],
+        "format": {"format_name": "mov,mp4", "duration": "2.0"},
+    }
+
+    probe = _media_probe_from_payload(Path("vfr.mp4"), payload)
+
+    assert probe.fps == 20
+    assert probe.frame_count == 40
+    assert probe.duration_ms == 2_000
+
+
+@pytest.mark.parametrize("suffix", [".mkv", ".mov"])
+def test_probe_supports_real_mkv_and_mov_with_derived_frame_identity(
+    tmp_path: Path, suffix: str
+):
+    source = tmp_path / f"source{suffix}"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=24000/1001:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+    )
+
+    probe = probe_media(source)
+
+    validate_source_media(probe)
+    assert probe.video_codec == "h264"
+    assert probe.pixel_format == "yuv420p"
+    assert probe.fps == pytest.approx(23.976, abs=0.001)
+    assert probe.frame_count > 0 and probe.duration_ms > 0

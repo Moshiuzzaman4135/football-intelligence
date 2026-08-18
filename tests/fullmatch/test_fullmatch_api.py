@@ -7,7 +7,7 @@ from football_intelligence.api import create_app
 from football_intelligence.domain import JobStatus
 from football_intelligence.fullmatch.manifest import FullMatchManifest, RunnerOptions
 from football_intelligence.fullmatch.media import MediaProbe
-from football_intelligence.storage import JobRepository
+from football_intelligence.storage import InvalidJobTransition, JobRepository
 
 
 class FakeFullMatchRunner:
@@ -134,3 +134,35 @@ def test_running_job_is_resubmitted_after_api_process_restart(tmp_path: Path):
     assert resumed.status_code == 202
     assert resumed.json()["status"] == "running"
     assert runner.calls == [job.id]
+
+
+def test_full_match_start_stop_cas_race_maps_to_conflict_and_releases_slot(
+    tmp_path: Path,
+):
+    class StopWinsRepository(JobRepository):
+        stop_on_start = True
+
+        def transition(self, job_id, target, **kwargs):
+            if target is JobStatus.RUNNING and self.stop_on_start:
+                self.stop_on_start = False
+                super().transition(job_id, JobStatus.STOPPED)
+                raise InvalidJobTransition("stop won")
+            return super().transition(job_id, target, **kwargs)
+
+    repository = StopWinsRepository(tmp_path / "jobs.sqlite3")
+    stopped = repository.create_with_id("one", "s3://bucket/one.mp4", "one.mp4")
+    next_job = repository.create_with_id("two", "s3://bucket/two.mp4", "two.mp4")
+    runner = FakeFullMatchRunner(repository, tmp_path)
+    app = create_app(
+        repository=repository,
+        data_root=tmp_path,
+        pipeline_factory=lambda: None,
+        full_match_runner_factory=lambda: runner,
+    )
+
+    with TestClient(app) as client:
+        conflict = client.post(f"/jobs/{stopped.id}/full-match/run")
+        accepted = client.post(f"/jobs/{next_job.id}/full-match/run")
+
+    assert conflict.status_code == 409
+    assert accepted.status_code == 202

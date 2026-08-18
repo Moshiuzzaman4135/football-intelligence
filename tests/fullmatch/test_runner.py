@@ -1,20 +1,26 @@
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from football_intelligence.domain import (
+    BoundingBox,
     EventEvidence,
     FootballEvent,
     JobStatus,
     ScoreboardObservation,
     ScoreboardRegion,
+    TrackObservation,
 )
 from football_intelligence.fullmatch.heatmap import ScreenSpaceHeatMap
-from football_intelligence.fullmatch.manifest import ChunkRecord
-from football_intelligence.fullmatch.media import MediaProbe
+from football_intelligence.fullmatch.manifest import ChunkRecord, RunnerOptions
+from football_intelligence.fullmatch.media import MediaCancelled, MediaProbe
 from football_intelligence.fullmatch.runner import (
+    BoundedTrails,
     ChunkResult,
     FullMatchRunner,
+    RuntimeProvenance,
+    active_events_at,
     namespace_track_id,
 )
 from football_intelligence.object_store import InMemoryObjectStore
@@ -31,9 +37,12 @@ class FakeRunner(FullMatchRunner):
         self.die_on_chunk = die_on_chunk
         self.processed: list[int] = []
 
-    def _prepare_media(self, job, workspace):
+    def _prepare_media(self, job, workspace, *, rebuild_proxy=False):
+        del rebuild_proxy
         proxy = workspace / "proxy.mp4"
         proxy.write_bytes(b"bounded proxy")
+        source = workspace / "source.mp4"
+        source.write_bytes(b"bounded source")
         metadata = MediaProbe(
             path=str(proxy),
             container="mov,mp4",
@@ -45,7 +54,7 @@ class FakeRunner(FullMatchRunner):
             duration_ms=250_000,
             has_audio=True,
         )
-        return metadata.model_copy(update={"path": str(workspace / "source.mp4")}), metadata
+        return metadata.model_copy(update={"path": str(source)}), metadata
 
     def _process_chunk(self, *, job_id: str, proxy: Path, chunk: ChunkRecord):
         del proxy
@@ -96,6 +105,12 @@ class FakeRunner(FullMatchRunner):
     def _probe_final(self, output):
         del output
         return None
+
+    def _media_checkpoint_is_durable(self, checkpoint, expected_sha256):
+        from football_intelligence.fullmatch.media import sha256_file
+
+        path = Path(checkpoint.path)
+        return path.is_file() and sha256_file(path) == expected_sha256
 
 
 def test_crash_after_chunk_one_resumes_without_reprocessing_or_raw_sql(tmp_path: Path):
@@ -168,10 +183,373 @@ def test_resume_reprocesses_completed_chunk_when_checksum_artifact_is_missing(
     assert second.processed == [0, 1, 2]
 
 
+def test_invalid_chunk_invalidates_all_state_dependent_successors(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    first = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        die_on_chunk=2,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        first.run(job.id)
+    (first.workspace_for(job.id) / "chunk-0000.mp4").write_bytes(b"corrupt")
+    second = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    second.run(job.id)
+
+    assert second.processed == [0, 1, 2]
+
+
+@pytest.mark.parametrize("failure", [OSError("s3"), ValueError("probe"), RuntimeError("proxy")])
+def test_controlled_preparation_failure_after_start_marks_job_failed(
+    tmp_path: Path, failure: Exception
+):
+    repository = JobRepository(tmp_path / f"{type(failure).__name__}.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+
+    class FailingPreparation(FakeRunner):
+        def _prepare_media(self, job, workspace, *, rebuild_proxy=False):
+            del rebuild_proxy
+            del job, workspace
+            raise failure
+
+    runner = FailingPreparation(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    with pytest.raises(type(failure), match=str(failure)):
+        runner.run(job.id)
+
+    failed = repository.get(job.id)
+    assert failed.status is JobStatus.FAILED
+    assert failed.error == str(failure)
+
+
+def test_process_death_during_preparation_leaves_job_resumable(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+
+    class DyingPreparation(FakeRunner):
+        def _prepare_media(self, job, workspace, *, rebuild_proxy=False):
+            del job, workspace, rebuild_proxy
+            raise SimulatedProcessDeath
+
+    first = DyingPreparation(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        first.run(job.id)
+    assert repository.get(job.id).status is JobStatus.RUNNING
+
+    resumed = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    ).run(job.id)
+    assert resumed.status is JobStatus.COMPLETED
+
+
+def test_real_stream_and_probe_failures_are_lifecycle_guarded(tmp_path: Path):
+    class FailingStreamStore(InMemoryObjectStore):
+        def iter_object(self, object_key, chunk_size=1024 * 1024):
+            del object_key, chunk_size
+            raise OSError("S3 stream failed")
+            yield b""  # pragma: no cover
+
+    for job_id, store, expected in (
+        ("s3", FailingStreamStore(), "S3 stream failed"),
+        ("probe", InMemoryObjectStore(), "ffprobe"),
+    ):
+        repository = JobRepository(tmp_path / f"{job_id}.sqlite3")
+        key = f"uploads/{job_id}.mp4"
+        if job_id == "probe":
+            upload = store.create_multipart(key, "video/mp4")
+            part = store.upload_part(upload, key, 1, b"not media")
+            store.complete_multipart(upload, key, [part])
+        job = repository.create_with_id(job_id, f"s3://football-media/{key}", f"{job_id}.mp4")
+        runner = FullMatchRunner(
+            repository=repository,
+            object_store=store,
+            bucket="football-media",
+            data_root=tmp_path / job_id,
+        )
+
+        with pytest.raises((OSError, subprocess.SubprocessError)):
+            runner.run(job.id)
+
+        assert repository.get(job.id).status is JobStatus.FAILED
+        assert expected.lower() in repository.get(job.id).error.lower()
+
+
+def test_real_proxy_failure_is_lifecycle_guarded(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=green:s=160x90:r=1:d=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+    )
+    store = InMemoryObjectStore()
+    key = "uploads/proxy.mp4"
+    upload = store.create_multipart(key, "video/mp4")
+    part = store.upload_part(upload, key, 1, source.read_bytes())
+    store.complete_multipart(upload, key, [part])
+    repository = JobRepository(tmp_path / "proxy.sqlite3")
+    job = repository.create_with_id("job", f"s3://football-media/{key}", "proxy.mp4")
+
+    def fail_proxy(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("proxy encoder failed")
+
+    monkeypatch.setattr("football_intelligence.fullmatch.runner.build_proxy", fail_proxy)
+    runner = FullMatchRunner(
+        repository=repository,
+        object_store=store,
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="proxy encoder failed"):
+        runner.run(job.id)
+
+    assert repository.get(job.id).status is JobStatus.FAILED
+
+
+@pytest.mark.parametrize("manifest_body", ["{corrupt", '{"job_id":"another"}'])
+def test_corrupt_or_mismatched_manifest_marks_running_job_failed(
+    tmp_path: Path, manifest_body: str
+):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    repository.transition(job.id, JobStatus.RUNNING)
+    workspace = tmp_path / "fullmatch" / job.id
+    workspace.mkdir(parents=True)
+    (workspace / "manifest.json").write_text(manifest_body, encoding="utf-8")
+    runner = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    with pytest.raises((ValueError, RuntimeError)):
+        runner.run(job.id)
+
+    assert repository.get(job.id).status is JobStatus.FAILED
+
+
+def test_completed_fast_return_validates_final_and_heat_map_hashes(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    runner = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    runner.run(job.id)
+    runner.heat_map_path(job.id).write_bytes(b"corrupt")
+
+    with pytest.raises(RuntimeError, match="artifact"):
+        runner.run(job.id)
+
+
+def test_completed_fast_return_rejects_corrupt_proxy_checkpoint(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    runner = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    runner.run(job.id)
+    Path(runner.status(job.id).proxy.path).write_bytes(b"corrupt")
+
+    with pytest.raises(RuntimeError, match="proxy"):
+        runner.run(job.id)
+
+
+def test_runtime_provenance_is_immutable_and_output_affecting(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    provenance = RuntimeProvenance(
+        detector="test.detector",
+        detector_model="weights.pt",
+        detector_device="cpu",
+        detector_framework="test-framework",
+        detector_version="1.2.3",
+        detector_config={"confidence": "0.42"},
+        tracker="test.tracker",
+        tracker_config={"iou": "0.25"},
+        ocr_engine="test.ocr",
+        ocr_model="eng",
+        ocr_version="5.5.0",
+        ocr_model_sha256="7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+    )
+    runner = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        provenance=provenance,
+        die_on_chunk=1,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        runner.run(job.id)
+
+    manifest = runner.status(job.id)
+
+    assert manifest.options.provenance == provenance
+    assert manifest.options.max_frame_errors == 10
+    assert manifest.options.output_video_codec == "h264"
+    assert manifest.options.output_pixel_format == "yuv420p"
+    assert manifest.source_sha256 != "0" * 64
+    assert manifest.proxy_sha256 != "0" * 64
+    assert not Path(manifest.source.path).exists()
+
+    changed = provenance.model_copy(update={"detector_model": "other-weights.pt"})
+    resumed = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        provenance=changed,
+    )
+    with pytest.raises(RuntimeError, match="runner options"):
+        resumed.run(job.id)
+    assert repository.get(job.id).status is JobStatus.FAILED
+
+
+def test_explicit_runner_options_preserve_frame_error_policy(tmp_path: Path):
+    runner = FakeRunner(
+        repository=JobRepository(tmp_path / "jobs.sqlite3"),
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        options=RunnerOptions(max_frame_errors=37),
+    )
+
+    assert runner.options.max_frame_errors == 37
+    assert runner.max_frame_errors == 37
+
+
+def test_corrupt_proxy_is_rebuilt_and_invalidates_every_chunk(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    first = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        die_on_chunk=1,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        first.run(job.id)
+    Path(first.status(job.id).proxy.path).write_bytes(b"corrupt")
+    second = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    second.run(job.id)
+
+    assert second.processed == [0, 1, 2]
+
+
 def test_track_namespace_is_deterministic_and_chunk_local():
     assert namespace_track_id(0, 7) == 7
     assert namespace_track_id(1, 7) == 1_000_007
     assert namespace_track_id(1, 7) != namespace_track_id(2, 7)
+
+
+def test_trails_evict_inactive_tracks_and_enforce_global_bound():
+    trails = BoundedTrails(max_points=3, max_inactive_frames=2, max_tracks=2)
+
+    def track(track_id: int, frame: int) -> TrackObservation:
+        return TrackObservation(
+            track_id=track_id,
+            object_class="player",
+            bbox=BoundingBox(x1=1, y1=1, x2=3, y2=5),
+            confidence=0.9,
+            timestamp_ms=frame * 40,
+            frame_index=frame,
+        )
+
+    trails.update([track(1, 0), track(2, 0)], 0)
+    current = trails.update([track(3, 1)], 1)
+    assert len(current) == 2 and 3 in current
+    current = trails.update([], 4)
+    assert current == {}
+
+
+def test_overlay_events_are_limited_to_active_window():
+    def event(event_id: str, start_ms: int, end_ms: int) -> FootballEvent:
+        return FootballEvent(
+            id=event_id,
+            job_id="job-1",
+            event_type="candidate",
+            start_ms=start_ms,
+            end_ms=end_ms,
+            description="candidate",
+            confidence=0.8,
+            evidence=[EventEvidence(kind="test", value=True, confidence=0.8)],
+            source=["test"],
+        )
+
+    events = [
+        event("old", 0, 100),
+        event("active", 1_000, 1_100),
+        event("future", 9_000, 9_100),
+    ]
+
+    assert [item.id for item in active_events_at(events, 1_500)] == ["active"]
+    assert active_events_at(events, 8_000) == []
 
 
 def test_stop_between_chunks_does_not_finalize(tmp_path: Path):
@@ -198,4 +576,112 @@ def test_stop_between_chunks_does_not_finalize(tmp_path: Path):
 
     assert stopped.status is JobStatus.STOPPED
     assert runner.processed == [0]
+    assert not (runner.workspace_for(job.id) / "annotated.mp4").exists()
+
+
+def test_stop_during_preparation_stops_without_publishing_manifest(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+
+    class StopDuringPreparation(FakeRunner):
+        def _prepare_media(self, job, workspace, *, rebuild_proxy=False):
+            del rebuild_proxy
+            result = super()._prepare_media(job, workspace)
+            self.repository.transition(job.id, JobStatus.STOPPING)
+            return result
+
+    runner = StopDuringPreparation(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    stopped = runner.run(job.id)
+
+    assert stopped.status is JobStatus.STOPPED
+    assert not (runner.workspace_for(job.id) / "manifest.json").exists()
+
+
+def test_stop_during_s3_localization_removes_partial_and_stops(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+
+    class StopDuringStream(InMemoryObjectStore):
+        def iter_object(self, object_key, chunk_size=1024 * 1024):
+            del object_key, chunk_size
+            repository.transition(job.id, JobStatus.STOPPING)
+            yield b"not written"
+
+    runner = FullMatchRunner(
+        repository=repository,
+        object_store=StopDuringStream(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    stopped = runner.run(job.id)
+
+    assert stopped.status is JobStatus.STOPPED
+    workspace = runner.workspace_for(job.id)
+    assert not (workspace / "source.partial").exists()
+    assert not (workspace / "manifest.json").exists()
+
+
+def test_stop_during_proxy_encode_does_not_publish_manifest(tmp_path: Path):
+    source = tmp_path / "fixture.mp4"
+    source.write_bytes(b"localized source")
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+
+    class ProxyBarrierRunner(FullMatchRunner):
+        def _prepare_media(self, job, workspace, *, rebuild_proxy=False):
+            del rebuild_proxy
+            localized = workspace / "source.mp4"
+            localized.write_bytes(source.read_bytes())
+            repository.transition(job.id, JobStatus.STOPPING)
+            raise MediaCancelled("proxy encode cancelled")
+
+    runner = ProxyBarrierRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    stopped = runner.run(job.id)
+
+    assert stopped.status is JobStatus.STOPPED
+    assert not (runner.workspace_for(job.id) / "manifest.json").exists()
+
+
+def test_stop_during_final_encode_does_not_publish_final_artifact(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+
+    class StopDuringFinal(FakeRunner):
+        def _finalize(self, **kwargs):
+            output = super()._finalize(**kwargs)
+            self.repository.transition(job.id, JobStatus.STOPPING)
+            return output
+
+    runner = StopDuringFinal(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    stopped = runner.run(job.id)
+
+    assert stopped.status is JobStatus.STOPPED
+    assert runner.status(job.id).final_artifact is None
     assert not (runner.workspace_for(job.id) / "annotated.mp4").exists()

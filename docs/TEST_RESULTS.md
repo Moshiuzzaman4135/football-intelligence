@@ -102,3 +102,12 @@ Fresh image checks:
 - A generated 121-second 160x90/1 FPS H.264+AAC source ran through Docker as two planned chunks. The validated chunks were H.264/no-audio with durations exactly 120 and 1 seconds; the final was H.264, 160x90, 1 FPS, approximately 121 seconds, and retained one audio stream.
 - The rebuilt image contains Tesseract 5.5.0 and the pinned `tessdata_fast` English SHA-256 `7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2`; its real crop test passed.
 - Focused full-match suite: 25 passed. Complete protected suite: 173 passed, two environment-gated skips, and the pre-existing Starlette `TestClient` warning.
+
+## Restartable full-match MVP runner fix round 1 — 2026-08-18
+
+- Lifecycle regression tests cover real object-store stream, FFprobe, and proxy failures; corrupt/mismatched manifests; process death during preparation; and deterministic stop barriers during localization, proxy preparation, and final publication.
+- The manifest now locks detector/model/device/framework/version/config, tracker/config, OCR engine/model/version/checksum, frame-error policy, proxy/output encoding, chunk/OCR/overlay/trail/heat-map settings, and source/proxy/final/heat-map hashes plus probe identity. A changed runtime is rejected on resume.
+- Restart tests cover corrupt proxy rebuilding, localized-source identity checking, durable source removal, successor invalidation after a corrupt chunk, completed-artifact verification, and persisted OCR consensus/raw support evidence.
+- Real media coverage includes N/A and `0/0` fallback, VFR average-rate identity, MKV/MOV probes, strict MP4/H.264/yuv420p/AAC timing, faststart ordering, full decode, two non-overlap chunks, and a real HTTP byte-range response.
+- Focused Docker suite: 54 passed. Complete protected suite: 202 passed, two environment-gated skips, and the pre-existing Starlette `TestClient` warning.
+- Repository-wide Ruff, Compose configuration with ephemeral values, rebuilt backend image, and `git diff --check` passed.

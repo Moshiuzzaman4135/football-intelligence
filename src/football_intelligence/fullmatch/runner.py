@@ -17,6 +17,7 @@ from football_intelligence.domain import (
     JobRecord,
     JobStatus,
     ScoreboardObservation,
+    TrackObservation,
     VideoMetadata,
 )
 from football_intelligence.events import TemporalEventEngine, deduplicate_events
@@ -28,16 +29,21 @@ from football_intelligence.fullmatch.manifest import (
     ManifestStore,
     RawOcrEvidence,
     RunnerOptions,
+    RuntimeProvenance,
 )
 from football_intelligence.fullmatch.media import (
+    MediaCancelled,
     MediaProbe,
     build_proxy,
+    delete_file_durable,
     localize_s3_source,
     probe_media,
+    run_media_command,
     sha256_file,
     validate_source_media,
 )
 from football_intelligence.fullmatch.ocr import (
+    ConsensusState,
     FakeOcrEngine,
     OcrEngine,
     ScoreboardConsensus,
@@ -58,13 +64,63 @@ def namespace_track_id(chunk_index: int, local_track_id: int) -> int:
     return chunk_index * TRACK_NAMESPACE_SIZE + local_track_id
 
 
+def active_events_at(
+    events: list[FootballEvent], timestamp_ms: int, post_window_ms: int = 1_000
+) -> list[FootballEvent]:
+    return [
+        event
+        for event in events
+        if event.start_ms <= timestamp_ms <= event.end_ms + post_window_ms
+    ]
+
+
 class ChunkResult(BaseModel):
     path: Path
     events: list[FootballEvent] = Field(default_factory=list)
     scoreboard: list[ScoreboardObservation] = Field(default_factory=list)
     raw_ocr_evidence: list[RawOcrEvidence] = Field(default_factory=list)
+    consensus_state: ConsensusState | None = None
     heat_map_counts: list[list[int]]
     peak_observations: int = Field(default=0, ge=0)
+
+
+class BoundedTrails:
+    def __init__(
+        self, *, max_points: int = 30, max_inactive_frames: int = 30, max_tracks: int = 512
+    ) -> None:
+        self.max_points = max_points
+        self.max_inactive_frames = max_inactive_frames
+        self.max_tracks = max_tracks
+        self._trails: dict[int, list[tuple[int, int]]] = {}
+        self._last_seen: dict[int, int] = {}
+
+    def update(
+        self, tracks: list[TrackObservation], frame_index: int
+    ) -> dict[int, list[tuple[int, int]]]:
+        for track in tracks:
+            center = tuple(round(value) for value in track.bbox.center)
+            self._trails.setdefault(track.track_id, []).append(center)
+            self._trails[track.track_id] = self._trails[track.track_id][
+                -self.max_points :
+            ]
+            self._last_seen[track.track_id] = frame_index
+        expired = [
+            track_id
+            for track_id, last_seen in self._last_seen.items()
+            if frame_index - last_seen > self.max_inactive_frames
+        ]
+        overflow = max(0, len(self._last_seen) - self.max_tracks)
+        if overflow:
+            expired.extend(
+                track_id
+                for track_id, _ in sorted(
+                    self._last_seen.items(), key=lambda item: item[1]
+                )[:overflow]
+            )
+        for track_id in set(expired):
+            self._last_seen.pop(track_id, None)
+            self._trails.pop(track_id, None)
+        return self._trails
 
 
 class FullMatchRunner:
@@ -81,7 +137,8 @@ class FullMatchRunner:
         tracker_factory: Callable[[], Tracker] = IoUTracker,
         ocr_engine: OcrEngine | None = None,
         options: RunnerOptions | None = None,
-        max_frame_errors: int = 10,
+        provenance: RuntimeProvenance | None = None,
+        max_frame_errors: int | None = None,
     ) -> None:
         self.repository = repository
         self.object_store = object_store
@@ -90,8 +147,32 @@ class FullMatchRunner:
         self.detector_factory = detector_factory
         self.tracker_factory = tracker_factory
         self.ocr_engine = ocr_engine or FakeOcrEngine([])
-        self.options = options or RunnerOptions()
-        self.max_frame_errors = max_frame_errors
+        runtime_provenance = provenance or RuntimeProvenance(
+            detector=self._callable_name(detector_factory),
+            detector_model="runtime-injected",
+            detector_device="runtime-injected",
+            detector_framework="runtime-injected",
+            detector_version="runtime-injected",
+            tracker=self._callable_name(tracker_factory),
+            tracker_config={},
+            ocr_engine=f"{type(self.ocr_engine).__module__}.{type(self.ocr_engine).__qualname__}",
+            ocr_model=getattr(self.ocr_engine, "model_name", "runtime-injected"),
+            ocr_version=getattr(self.ocr_engine, "version", "runtime-injected"),
+            ocr_model_sha256=getattr(self.ocr_engine, "model_sha256", "0" * 64),
+        )
+        base_options = options or RunnerOptions()
+        effective_max_frame_errors = (
+            base_options.max_frame_errors
+            if max_frame_errors is None
+            else max_frame_errors
+        )
+        self.options = base_options.model_copy(
+            update={
+                "provenance": runtime_provenance,
+                "max_frame_errors": effective_max_frame_errors,
+            }
+        )
+        self.max_frame_errors = effective_max_frame_errors
         self._consensus: ScoreboardConsensus | None = None
 
     def workspace_for(self, job_id: str) -> Path:
@@ -115,9 +196,22 @@ class FullMatchRunner:
         if job.status is JobStatus.CREATED:
             job = self.repository.transition(job_id, JobStatus.RUNNING)
         elif job.status is JobStatus.COMPLETED:
+            self._validate_completed_artifacts(job)
             return job
         elif job.status is not JobStatus.RUNNING:
             raise RuntimeError(f"cannot run {job.status.value} full-match job")
+        try:
+            return self._run_active(job)
+        except Exception as error:
+            current = self.repository.get(job_id)
+            if current.status is JobStatus.STOPPING:
+                return self.repository.transition(job_id, JobStatus.STOPPED)
+            if current.status is JobStatus.RUNNING:
+                self.repository.transition(job_id, JobStatus.FAILED, error=str(error))
+            raise
+
+    def _run_active(self, job: JobRecord) -> JobRecord:
+        job_id = job.id
         workspace = self.workspace_for(job_id)
         workspace.mkdir(parents=True, exist_ok=True)
         store = ManifestStore(workspace / "manifest.json")
@@ -127,46 +221,60 @@ class FullMatchRunner:
                 raise RuntimeError("manifest identity does not match the job")
             if manifest.options != self.options:
                 raise RuntimeError("runner options differ from the immutable manifest")
+            if not self._media_checkpoint_is_durable(
+                manifest.proxy, manifest.proxy_sha256
+            ):
+                source, proxy = self._prepare_media(job, workspace, rebuild_proxy=True)
+                if sha256_file(source.path) != manifest.source_sha256:
+                    raise RuntimeError("localized source identity changed")
+                self._validate_probe_identity(source, manifest.source)
+                manifest.proxy = proxy
+                manifest.proxy_sha256 = sha256_file(proxy.path)
+                self._invalidate_chunks_from(manifest, 0)
+                manifest.final_artifact = None
+                store.save(manifest)
+                delete_file_durable(source.path)
         else:
             source, proxy = self._prepare_media(job, workspace)
+            self._raise_if_stopping(job_id)
             manifest = FullMatchManifest.create(
                 job_id=job.id,
                 source_uri=job.source_path,
                 options=self.options,
                 source=source,
                 proxy=proxy,
+                source_sha256=sha256_file(source.path),
+                proxy_sha256=sha256_file(proxy.path),
             )
             store.save(manifest)
             self.repository.save_job_metadata(job_id, source=self._video_metadata(source))
+            delete_file_durable(source.path)
         repaired_manifest = False
-        for index, chunk in enumerate(manifest.chunks):
-            if chunk.status == "completed" and not self._chunk_is_durable(chunk):
-                manifest.chunks[index] = chunk.model_copy(
-                    update={
-                        "status": "pending",
-                        "output_path": None,
-                        "sha256": None,
-                        "events": [],
-                        "scoreboard": [],
-                        "raw_ocr_evidence": [],
-                        "heat_map_counts": None,
-                        "peak_observations": 0,
-                        "completed_at": None,
-                    }
-                )
-                repaired_manifest = True
+        invalid_from: int | None = next(
+            (
+                index
+                for index, chunk in enumerate(manifest.chunks)
+                if chunk.status == "completed" and not self._chunk_is_durable(chunk)
+            ),
+            None,
+        )
+        if invalid_from is not None:
+            self._invalidate_chunks_from(manifest, invalid_from)
+            repaired_manifest = True
         if repaired_manifest:
             store.save(manifest)
         proxy_path = Path(manifest.proxy.path)
-        self._consensus = ScoreboardConsensus(job_id)
-        durable_scoreboard = [
-            observation
+        durable_states = [
+            chunk.consensus_state
             for chunk in manifest.chunks
-            if chunk.status == "completed"
-            for observation in chunk.scoreboard
+            if chunk.status == "completed" and chunk.consensus_state is not None
         ]
-        if durable_scoreboard:
-            self._consensus.seed(durable_scoreboard[-1])
+        self._consensus = ScoreboardConsensus(
+            job_id,
+            producer=getattr(self.ocr_engine, "producer", "ocr.unknown"),
+            producer_version=getattr(self.ocr_engine, "version", "unknown"),
+            state=durable_states[-1] if durable_states else None,
+        )
         try:
             for index, chunk in enumerate(manifest.chunks):
                 if chunk.status == "completed":
@@ -189,6 +297,7 @@ class FullMatchRunner:
                         "events": result.events,
                         "scoreboard": result.scoreboard,
                         "raw_ocr_evidence": result.raw_ocr_evidence,
+                        "consensus_state": result.consensus_state,
                         "heat_map_counts": result.heat_map_counts,
                         "peak_observations": result.peak_observations,
                         "completed_at": datetime.now(UTC),
@@ -200,27 +309,16 @@ class FullMatchRunner:
                 )
                 store.save(manifest)
                 self._persist_events(manifest)
-                self.repository.update_progress(job_id, manifest.progress)
+                current_progress = self.repository.get(job_id).progress
+                if manifest.progress > current_progress:
+                    self.repository.update_progress(job_id, manifest.progress)
             heat_map = self._aggregate_heat_map(manifest)
             heat_map_path = heat_map.write_png(workspace / "heat-map.png")
             output = self._finalize(
                 manifest=manifest, proxy=proxy_path, workspace=workspace
             )
-            manifest.final_artifact = FinalArtifact(
-                path=str(output),
-                sha256=sha256_file(output),
-                heat_map_path=str(heat_map_path),
-                heat_map_sha256=sha256_file(heat_map_path),
-                completed_at=datetime.now(UTC),
-            )
-            store.save(manifest)
-            self._persist_events(manifest)
             output_probe = self._probe_final(output)
-            if output_probe is not None:
-                self.repository.save_job_metadata(
-                    job_id, output=self._video_metadata(output_probe)
-                )
-            return self.repository.complete_or_stop(
+            finalized = self.repository.complete_or_stop(
                 job_id,
                 output_path=str(output),
                 metrics={
@@ -229,6 +327,25 @@ class FullMatchRunner:
                     "peak_observations": manifest.peak_observations,
                 },
             )
+            if finalized.status is not JobStatus.COMPLETED:
+                delete_file_durable(output)
+                delete_file_durable(heat_map_path)
+                return finalized
+            manifest.final_artifact = FinalArtifact(
+                path=str(output),
+                sha256=sha256_file(output),
+                heat_map_path=str(heat_map_path),
+                heat_map_sha256=sha256_file(heat_map_path),
+                probe=output_probe,
+                completed_at=datetime.now(UTC),
+            )
+            store.save(manifest)
+            self._persist_events(manifest)
+            if output_probe is not None:
+                self.repository.save_job_metadata(
+                    job_id, output=self._video_metadata(output_probe)
+                )
+            return finalized
         except Exception as error:
             current = self.repository.get(job_id)
             if current.status is JobStatus.STOPPING:
@@ -238,7 +355,7 @@ class FullMatchRunner:
             raise
 
     def _prepare_media(
-        self, job: JobRecord, workspace: Path
+        self, job: JobRecord, workspace: Path, *, rebuild_proxy: bool = False
     ) -> tuple[MediaProbe, MediaProbe]:
         existing_sources = list(workspace.glob("source.*"))
         source_path = next(
@@ -250,17 +367,99 @@ class FullMatchRunner:
                 job.source_path,
                 bucket=self.bucket,
                 destination_dir=workspace,
+                cancelled=lambda: self._is_stopping(job.id),
             )
-        source = probe_media(source_path)
+        self._raise_if_stopping(job.id)
+        try:
+            source = probe_media(source_path)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            delete_file_durable(source_path)
+            source_path = localize_s3_source(
+                self.object_store,
+                job.source_path,
+                bucket=self.bucket,
+                destination_dir=workspace,
+                cancelled=lambda: self._is_stopping(job.id),
+            )
+            source = probe_media(source_path)
+        self._raise_if_stopping(job.id)
         validate_source_media(source)
         proxy_path = workspace / "proxy.mp4"
+        if rebuild_proxy and proxy_path.exists():
+            delete_file_durable(proxy_path)
         if not proxy_path.is_file():
-            build_proxy(source_path, proxy_path)
+            build_proxy(
+                source_path,
+                proxy_path,
+                cancelled=lambda: self._is_stopping(job.id),
+            )
+        self._raise_if_stopping(job.id)
         proxy = probe_media(proxy_path)
         return source, proxy
 
     def _probe_final(self, output: Path) -> MediaProbe | None:
         return probe_media(output)
+
+    def _is_stopping(self, job_id: str) -> bool:
+        return self.repository.get(job_id).status is JobStatus.STOPPING
+
+    def _raise_if_stopping(self, job_id: str) -> None:
+        if self._is_stopping(job_id):
+            raise MediaCancelled("full-match stop requested")
+
+    def _validate_completed_artifacts(self, job: JobRecord) -> None:
+        manifest = self.status(job.id)
+        artifact = manifest.final_artifact
+        if artifact is None and job.output_path:
+            output = Path(job.output_path)
+            heat_map = self.workspace_for(job.id) / "heat-map.png"
+            if output.is_file() and heat_map.is_file():
+                probe = self._probe_final(output)
+                if probe is not None:
+                    self._validate_final(probe, manifest.proxy)
+                    self._validate_faststart(output)
+                    self._validate_full_decode(output, job.id)
+                artifact = FinalArtifact(
+                    path=str(output),
+                    sha256=sha256_file(output),
+                    heat_map_path=str(heat_map),
+                    heat_map_sha256=sha256_file(heat_map),
+                    probe=probe,
+                    completed_at=datetime.now(UTC),
+                )
+                manifest.final_artifact = artifact
+                ManifestStore(self.workspace_for(job.id) / "manifest.json").save(
+                    manifest
+                )
+        if artifact is None or job.output_path != artifact.path:
+            raise RuntimeError("completed full-match artifact manifest is missing")
+        output = Path(artifact.path)
+        heat_map = Path(artifact.heat_map_path)
+        if (
+            not output.is_file()
+            or sha256_file(output) != artifact.sha256
+            or not heat_map.is_file()
+            or sha256_file(heat_map) != artifact.heat_map_sha256
+        ):
+            raise RuntimeError("completed full-match artifact integrity check failed")
+        if not self._media_checkpoint_is_durable(
+            manifest.proxy, manifest.proxy_sha256
+        ):
+            raise RuntimeError("completed full-match proxy artifact integrity check failed")
+        actual = self._probe_final(output)
+        if artifact.probe is not None and actual is not None:
+            self._validate_probe_identity(actual, artifact.probe)
+
+    @staticmethod
+    def _validate_probe_identity(actual: MediaProbe, expected: MediaProbe) -> None:
+        if actual.model_dump(exclude={"path"}) != expected.model_dump(exclude={"path"}):
+            raise RuntimeError("media probe identity changed")
+
+    @staticmethod
+    def _callable_name(value: object) -> str:
+        module = getattr(value, "__module__", type(value).__module__)
+        qualname = getattr(value, "__qualname__", type(value).__qualname__)
+        return f"{module}.{qualname}"
 
     @staticmethod
     def _chunk_is_durable(chunk: ChunkRecord) -> bool:
@@ -268,6 +467,38 @@ class FullMatchRunner:
             return False
         output = Path(chunk.output_path)
         return output.is_file() and sha256_file(output) == chunk.sha256
+
+    def _media_checkpoint_is_durable(
+        self, checkpoint: MediaProbe, expected_sha256: str
+    ) -> bool:
+        path = Path(checkpoint.path)
+        if not path.is_file() or sha256_file(path) != expected_sha256:
+            return False
+        try:
+            self._validate_probe_identity(probe_media(path), checkpoint)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            return False
+        return True
+
+    @staticmethod
+    def _invalidate_chunks_from(manifest: FullMatchManifest, start: int) -> None:
+        for index, chunk in enumerate(manifest.chunks):
+            if index < start:
+                continue
+            manifest.chunks[index] = chunk.model_copy(
+                update={
+                    "status": "pending",
+                    "output_path": None,
+                    "sha256": None,
+                    "events": [],
+                    "scoreboard": [],
+                    "raw_ocr_evidence": [],
+                    "consensus_state": None,
+                    "heat_map_counts": None,
+                    "peak_observations": 0,
+                    "completed_at": None,
+                }
+            )
 
     def _process_chunk(
         self, *, job_id: str, proxy: Path, chunk: ChunkRecord
@@ -297,7 +528,11 @@ class FullMatchRunner:
         if not writer.isOpened():
             capture.release()
             raise RuntimeError(f"could not open chunk writer {work_path}")
-        trails: dict[int, list[tuple[int, int]]] = {}
+        trail_buffer = BoundedTrails(
+            max_points=self.options.trail_max_points,
+            max_inactive_frames=self.options.trail_max_inactive_frames,
+            max_tracks=self.options.trail_max_tracks,
+        )
         peak_observations = 0
         frame_errors = 0
         last_ocr_ms = -self.options.ocr_interval_ms
@@ -334,9 +569,14 @@ class FullMatchRunner:
                         )
                         if timestamp_ms - last_ocr_ms >= self.options.ocr_interval_ms:
                             last_ocr_ms = timestamp_ms
-                            raw = self.ocr_engine.read(
-                                frame, self.options.scoreboard_region
-                            )
+                            try:
+                                raw = self.ocr_engine.read(
+                                    frame, self.options.scoreboard_region
+                                )
+                            except Exception:
+                                if self._consensus is not None:
+                                    self._consensus.observe_missing(timestamp_ms)
+                                raise
                             raw_ocr_evidence.append(
                                 RawOcrEvidence(
                                     timestamp_ms=timestamp_ms,
@@ -357,17 +597,21 @@ class FullMatchRunner:
                                     scoreboard.append(accepted)
                                 if score_event is not None:
                                     events.append(score_event)
+                            elif self._consensus is not None:
+                                self._consensus.observe_missing(timestamp_ms)
                     for candidate in engine.drain_candidates():
                         if candidate.end_ms >= chunk.output_start_ms:
                             events.append(candidate)
-                    for track in tracks:
-                        center = tuple(round(value) for value in track.bbox.center)
-                        trails.setdefault(track.track_id, []).append(center)
-                        trails[track.track_id] = trails[track.track_id][-30:]
+                    trails = trail_buffer.update(tracks, frame_index)
+                    active_events = active_events_at(
+                        events[-50:],
+                        timestamp_ms,
+                        self.options.event_post_window_ms,
+                    )
                     rendered = draw_overlay(
                         frame,
                         tracks,
-                        events[-10:],
+                        active_events,
                         timestamp_ms=timestamp_ms,
                         trails=trails,
                     )
@@ -382,7 +626,7 @@ class FullMatchRunner:
             capture.release()
         temporary = output_path.with_name(f"{output_path.stem}.partial.mp4")
         try:
-            subprocess.run(
+            run_media_command(
                 [
                     "ffmpeg",
                     "-y",
@@ -394,14 +638,12 @@ class FullMatchRunner:
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "veryfast",
+                    self.options.encoder_preset,
                     "-pix_fmt",
                     "yuv420p",
                     str(temporary),
                 ],
-                check=True,
-                capture_output=True,
-                text=True,
+                cancelled=lambda: self._is_stopping(job_id),
             )
             temporary.replace(output_path)
         finally:
@@ -412,6 +654,7 @@ class FullMatchRunner:
             events=deduplicate_events(events),
             scoreboard=scoreboard,
             raw_ocr_evidence=raw_ocr_evidence,
+            consensus_state=self._consensus.snapshot() if self._consensus else None,
             heat_map_counts=heat_map.to_counts(),
             peak_observations=peak_observations,
         )
@@ -432,7 +675,7 @@ class FullMatchRunner:
         temporary = workspace / "annotated.partial.mp4"
         output = workspace / "annotated.mp4"
         try:
-            subprocess.run(
+            run_media_command(
                 [
                     "ffmpeg",
                     "-y",
@@ -448,11 +691,9 @@ class FullMatchRunner:
                     "copy",
                     str(video_only),
                 ],
-                check=True,
-                capture_output=True,
-                text=True,
+                cancelled=lambda: self._is_stopping(manifest.job_id),
             )
-            subprocess.run(
+            run_media_command(
                 [
                     "ffmpeg",
                     "-y",
@@ -473,7 +714,7 @@ class FullMatchRunner:
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "veryfast",
+                    manifest.options.encoder_preset,
                     "-pix_fmt",
                     "yuv420p",
                     "-c:a",
@@ -483,12 +724,12 @@ class FullMatchRunner:
                     "-shortest",
                     str(temporary),
                 ],
-                check=True,
-                capture_output=True,
-                text=True,
+                cancelled=lambda: self._is_stopping(manifest.job_id),
             )
             actual = probe_media(temporary)
             self._validate_final(actual, manifest.proxy)
+            self._validate_faststart(temporary)
+            self._validate_full_decode(temporary, manifest.job_id)
             temporary.replace(output)
         finally:
             video_only.unlink(missing_ok=True)
@@ -497,8 +738,12 @@ class FullMatchRunner:
 
     @staticmethod
     def _validate_final(actual: MediaProbe, expected: MediaProbe) -> None:
+        if not {"mov", "mp4"} & set(actual.container.split(",")):
+            raise RuntimeError("annotated video is not an MP4 container")
         if actual.video_codec != "h264":
             raise RuntimeError("annotated video is not H.264")
+        if actual.pixel_format != "yuv420p":
+            raise RuntimeError("annotated video is not yuv420p")
         if (actual.width, actual.height) != (expected.width, expected.height):
             raise RuntimeError("annotated video geometry changed")
         if abs(actual.fps - expected.fps) > 0.01:
@@ -509,6 +754,35 @@ class FullMatchRunner:
             raise RuntimeError("annotated video duration changed")
         if expected.has_audio and not actual.has_audio:
             raise RuntimeError("annotated video lost audio")
+        if expected.has_audio and actual.audio_codec != "aac":
+            raise RuntimeError("annotated video audio is not AAC")
+        if (
+            expected.has_audio
+            and actual.audio_start_ms is not None
+            and abs(actual.audio_start_ms - actual.video_start_ms) > 100
+        ):
+            raise RuntimeError("annotated audio/video start times diverge")
+        if (
+            expected.has_audio
+            and actual.audio_duration_ms is not None
+            and abs(actual.audio_duration_ms - actual.duration_ms) > 1_000
+        ):
+            raise RuntimeError("annotated audio/video durations diverge")
+
+    @staticmethod
+    def _validate_faststart(path: Path) -> None:
+        with path.open("rb") as source:
+            header = source.read(2 * 1024 * 1024)
+        moov = header.find(b"moov")
+        mdat = header.find(b"mdat")
+        if moov < 0 or mdat < 0 or moov > mdat:
+            raise RuntimeError("annotated MP4 is not faststart/browser compatible")
+
+    def _validate_full_decode(self, path: Path, job_id: str) -> None:
+        run_media_command(
+            ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+            cancelled=lambda: self._is_stopping(job_id),
+        )
 
     def _persist_events(self, manifest: FullMatchManifest) -> None:
         events = [event for chunk in manifest.chunks for event in chunk.events]

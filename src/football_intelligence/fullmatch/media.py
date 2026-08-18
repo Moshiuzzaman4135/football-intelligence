@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 from urllib.parse import unquote, urlsplit
@@ -15,6 +16,10 @@ from pydantic import BaseModel, Field
 
 MAX_MATCH_DURATION_MS = 150 * 60 * 1000
 _ALLOWED_CONTAINERS = {"mov", "mp4", "m4a", "3gp", "3g2", "mj2", "matroska"}
+
+
+class MediaCancelled(RuntimeError):
+    pass
 
 
 class StreamingObjectStore(Protocol):
@@ -31,6 +36,11 @@ class MediaProbe(BaseModel):
     frame_count: int = Field(gt=0)
     duration_ms: int = Field(gt=0)
     has_audio: bool
+    pixel_format: str = ""
+    video_start_ms: int = 0
+    audio_codec: str | None = None
+    audio_start_ms: int | None = None
+    audio_duration_ms: int | None = None
 
 
 def parse_same_bucket_uri(uri: str, bucket: str) -> str:
@@ -52,6 +62,7 @@ def localize_s3_source(
     *,
     bucket: str,
     destination_dir: str | Path,
+    cancelled: Callable[[], bool] | None = None,
 ) -> Path:
     key = parse_same_bucket_uri(uri, bucket)
     root = Path(destination_dir)
@@ -63,6 +74,8 @@ def localize_s3_source(
     try:
         with partial_path.open("xb") as target:
             for chunk in object_store.iter_object(key):
+                if cancelled is not None and cancelled():
+                    raise MediaCancelled("source localization cancelled")
                 target.write(chunk)
             target.flush()
             os.fsync(target.fileno())
@@ -83,6 +96,7 @@ def probe_media(path: str | Path) -> MediaProbe:
             "error",
             "-show_streams",
             "-show_format",
+            "-count_frames",
             "-of",
             "json",
             str(source),
@@ -92,26 +106,70 @@ def probe_media(path: str | Path) -> MediaProbe:
         text=True,
     )
     payload = json.loads(result.stdout)
+    return _media_probe_from_payload(source, payload)
+
+
+def _media_probe_from_payload(source: Path, payload: dict[str, object]) -> MediaProbe:
+    streams = payload.get("streams", [])
+    if not isinstance(streams, list):
+        streams = []
     video = next(
-        (stream for stream in payload.get("streams", []) if stream.get("codec_type") == "video"),
+        (stream for stream in streams if stream.get("codec_type") == "video"),
         None,
     )
     if video is None:
         raise ValueError("media does not contain a video stream")
-    duration = float(video.get("duration") or payload.get("format", {}).get("duration") or 0)
-    fps = _parse_rate(video.get("avg_frame_rate") or video.get("r_frame_rate"))
-    frame_count = int(video.get("nb_frames") or round(duration * fps))
+    format_payload = payload.get("format", {})
+    if not isinstance(format_payload, dict):
+        format_payload = {}
+    fps = _parse_rate(video.get("avg_frame_rate")) or _parse_rate(
+        video.get("r_frame_rate")
+    )
+    frame_count = _parse_positive_int(video.get("nb_read_frames")) or _parse_positive_int(
+        video.get("nb_frames")
+    )
+    duration = _parse_positive_float(video.get("duration")) or _parse_positive_float(
+        format_payload.get("duration")
+    )
+    if duration <= 0 and frame_count > 0 and fps > 0:
+        duration = frame_count / fps
+    if frame_count <= 0 and duration > 0 and fps > 0:
+        frame_count = max(1, round(duration * fps))
+    if fps <= 0 and duration > 0 and frame_count > 0:
+        fps = frame_count / duration
+    if duration <= 0 or frame_count <= 0 or fps <= 0:
+        raise ValueError("media timing metadata is invalid")
+    audio = next(
+        (stream for stream in streams if stream.get("codec_type") == "audio"), None
+    )
     return MediaProbe(
         path=str(source),
-        container=str(payload.get("format", {}).get("format_name", "")),
+        container=str(format_payload.get("format_name", "")),
         video_codec=str(video.get("codec_name", "")),
         width=int(video.get("width", 0)),
         height=int(video.get("height", 0)),
         fps=fps,
         frame_count=frame_count,
-        duration_ms=round(duration * 1000),
-        has_audio=any(
-            stream.get("codec_type") == "audio" for stream in payload.get("streams", [])
+        duration_ms=max(1, round(duration * 1000)),
+        has_audio=audio is not None,
+        pixel_format=str(video.get("pix_fmt", "")),
+        video_start_ms=round(_parse_nonnegative_float(video.get("start_time")) * 1000),
+        audio_codec=str(audio.get("codec_name", "")) if audio else None,
+        audio_start_ms=(
+            round(_parse_nonnegative_float(audio.get("start_time")) * 1000)
+            if audio
+            else None
+        ),
+        audio_duration_ms=(
+            round(
+                (
+                    _parse_positive_float(audio.get("duration"))
+                    or _parse_positive_float(format_payload.get("duration"))
+                )
+                * 1000
+            )
+            if audio
+            else None
         ),
     )
 
@@ -124,7 +182,12 @@ def validate_source_media(probe: MediaProbe) -> None:
         raise ValueError("full-match source exceeds 150 minutes")
 
 
-def build_proxy(source: str | Path, destination: str | Path) -> Path:
+def build_proxy(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> Path:
     source_path = Path(source)
     destination_path = Path(destination)
     original = probe_media(source_path)
@@ -135,7 +198,7 @@ def build_proxy(source: str | Path, destination: str | Path) -> Path:
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     temporary.unlink(missing_ok=True)
     try:
-        subprocess.run(
+        run_media_command(
             [
                 "ffmpeg",
                 "-y",
@@ -161,9 +224,7 @@ def build_proxy(source: str | Path, destination: str | Path) -> Path:
                 "+faststart",
                 str(temporary),
             ],
-            check=True,
-            capture_output=True,
-            text=True,
+            cancelled=cancelled,
         )
         actual = probe_media(temporary)
         _validate_proxy(actual, original, width, height, target_fps)
@@ -184,6 +245,8 @@ def _validate_proxy(
 ) -> None:
     if actual.video_codec != "h264":
         raise RuntimeError(f"proxy codec is not H.264: {actual.video_codec}")
+    if actual.pixel_format != "yuv420p":
+        raise RuntimeError(f"proxy pixel format is not yuv420p: {actual.pixel_format}")
     if (actual.width, actual.height) != (width, height):
         raise RuntimeError("proxy geometry does not match the bounded geometry")
     if abs(actual.fps - fps) > 0.01:
@@ -193,6 +256,8 @@ def _validate_proxy(
         raise RuntimeError("proxy duration changed outside tolerance")
     if original.has_audio and not actual.has_audio:
         raise RuntimeError("proxy lost the source audio stream")
+    if original.has_audio and actual.audio_codec != "aac":
+        raise RuntimeError("proxy audio is not AAC")
 
 
 def _bounded_geometry(width: int, height: int) -> tuple[int, int]:
@@ -205,11 +270,37 @@ def _bounded_geometry(width: int, height: int) -> tuple[int, int]:
 def _parse_rate(value: str | None) -> float:
     if not value:
         return 0.0
-    numerator, separator, denominator = value.partition("/")
-    if separator:
-        divisor = float(denominator)
-        return float(numerator) / divisor if divisor else 0.0
-    return float(value)
+    try:
+        numerator, separator, denominator = value.partition("/")
+        if separator:
+            divisor = float(denominator)
+            return float(numerator) / divisor if divisor else 0.0
+        return float(value)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def _parse_positive_float(value: object) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0 else 0.0
+
+
+def _parse_nonnegative_float(value: object) -> float:
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_positive_int(value: object) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
 
 
 def sha256_file(path: str | Path) -> str:
@@ -234,6 +325,38 @@ def atomic_json_write(path: str | Path, payload: object) -> None:
         _fsync_directory(target.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def delete_file_durable(path: str | Path) -> None:
+    target = Path(path)
+    target.unlink(missing_ok=True)
+    _fsync_directory(target.parent)
+
+
+def run_media_command(
+    command: list[str], *, cancelled: Callable[[], bool] | None = None
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=0.1)
+            break
+        except subprocess.TimeoutExpired as error:
+            if cancelled is not None and cancelled():
+                process.terminate()
+                process.communicate()
+                raise MediaCancelled("media command cancelled") from error
+    completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    if process.returncode:
+        raise subprocess.CalledProcessError(
+            process.returncode, command, output=stdout, stderr=stderr
+        )
+    return completed
 
 
 def _fsync_directory(path: Path) -> None:

@@ -41,6 +41,10 @@ class FakeOcrEngine:
 
     def __init__(self, results: Sequence[OcrResult]) -> None:
         self._results = deque(results)
+        self.model_name = "finite-test-results"
+        self.version = "1"
+        self.model_sha256 = "0" * 64
+        self.producer = "ocr.fake"
 
     def read(self, frame: np.ndarray | None, region: ScoreboardRegion) -> OcrResult:
         del frame, region
@@ -52,9 +56,20 @@ class FakeOcrEngine:
 class TesseractCliOcrEngine:
     """Tesseract CLI adapter that only sends the configured frame crop."""
 
-    def __init__(self, tessdata_dir: str, language: str = "eng") -> None:
+    def __init__(
+        self,
+        tessdata_dir: str,
+        language: str = "eng",
+        *,
+        version: str = "5.5.0",
+        model_sha256: str = "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+    ) -> None:
         self._tessdata_dir = tessdata_dir
         self._language = language
+        self.model_name = language
+        self.version = version
+        self.model_sha256 = model_sha256
+        self.producer = "ocr.tesseract"
 
     def read(self, frame: np.ndarray | None, region: ScoreboardRegion) -> OcrResult:
         if frame is None:
@@ -155,14 +170,34 @@ class ScoreboardParser:
 class ScoreboardConsensus:
     """Monotonic clock and five-second score consensus for candidate events."""
 
-    def __init__(self, job_id: str, stable_score_ms: int = 5_000) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        stable_score_ms: int = 5_000,
+        *,
+        producer: str = "ocr.tesseract",
+        producer_version: str = "unknown",
+        state: ConsensusState | None = None,
+    ) -> None:
         self._job_id = job_id
         self._stable_score_ms = stable_score_ms
+        self._producer = producer
+        self._producer_version = producer_version
         self._period = 1
         self._last_clock_ms: int | None = None
         self._accepted_score: tuple[int, int] | None = None
         self._pending_score: tuple[int, int] | None = None
         self._pending_since_ms: int | None = None
+        self._pending_last_ms: int | None = None
+        self._pending_reads: list[ParsedScoreboard] = []
+        if state is not None:
+            self._period = state.period
+            self._last_clock_ms = state.last_clock_ms
+            self._accepted_score = state.accepted_score
+            self._pending_score = state.pending_score
+            self._pending_since_ms = state.pending_since_ms
+            self._pending_last_ms = state.pending_last_ms
+            self._pending_reads = list(state.pending_reads)
 
     def seed(self, observation: ScoreboardObservation) -> None:
         """Restore accepted state from a durable completed-chunk observation."""
@@ -171,6 +206,23 @@ class ScoreboardConsensus:
         self._accepted_score = (observation.home_score, observation.away_score)
         self._pending_score = None
         self._pending_since_ms = None
+        self._pending_last_ms = None
+        self._pending_reads = []
+
+    def snapshot(self) -> ConsensusState:
+        return ConsensusState(
+            period=self._period,
+            last_clock_ms=self._last_clock_ms,
+            accepted_score=self._accepted_score,
+            pending_score=self._pending_score,
+            pending_since_ms=self._pending_since_ms,
+            pending_last_ms=self._pending_last_ms,
+            pending_reads=self._pending_reads,
+        )
+
+    def observe_missing(self, timestamp_ms: int) -> None:
+        del timestamp_ms
+        self._clear_pending()
 
     def observe(
         self, parsed: ParsedScoreboard
@@ -191,22 +243,29 @@ class ScoreboardConsensus:
             self._accepted_score = score
             return self._public(reading), None
         if score == self._accepted_score:
-            self._pending_score = None
-            self._pending_since_ms = None
+            self._clear_pending()
             return self._public(reading), None
         if score[0] < self._accepted_score[0] or score[1] < self._accepted_score[1]:
             return None, None
-        if score != self._pending_score:
+        if (
+            score != self._pending_score
+            or self._pending_last_ms is None
+            or reading.timestamp_ms - self._pending_last_ms > 1_500
+        ):
             self._pending_score = score
             self._pending_since_ms = reading.timestamp_ms
+            self._pending_last_ms = reading.timestamp_ms
+            self._pending_reads = [reading]
             return None, None
+        self._pending_last_ms = reading.timestamp_ms
+        self._pending_reads.append(reading)
         assert self._pending_since_ms is not None
         if reading.timestamp_ms - self._pending_since_ms < self._stable_score_ms:
             return None, None
         previous = self._accepted_score
         self._accepted_score = score
-        self._pending_score = None
-        self._pending_since_ms = None
+        supporting_reads = list(self._pending_reads)
+        self._clear_pending()
         transition = f"{previous[0]}-{previous[1]} -> {score[0]}-{score[1]}"
         event = FootballEvent(
             job_id=self._job_id,
@@ -228,21 +287,48 @@ class ScoreboardConsensus:
                     detail=reading.raw_text,
                 )
             ],
-            source=["ocr.tesseract.consensus"],
+            source=[f"{self._producer}.consensus"],
             frame_refs=[reading.frame_index],
             needs_review=True,
             period=self._period,
             match_clock_ms=reading.match_clock_ms,
             score_transition=transition,
+            producer_version=self._producer_version,
             original_model_output={
                 "raw_text": reading.raw_text,
                 "raw_confidence": reading.raw_confidence,
+                "supporting_reads": [
+                    {
+                        "timestamp_ms": item.timestamp_ms,
+                        "frame_index": item.frame_index,
+                        "raw_text": item.raw_text,
+                        "raw_confidence": item.raw_confidence,
+                    }
+                    for item in supporting_reads
+                ],
             },
         )
+        event.evidence[0].frame_refs = [item.frame_index for item in supporting_reads]
         return self._public(reading), event
+
+    def _clear_pending(self) -> None:
+        self._pending_score = None
+        self._pending_since_ms = None
+        self._pending_last_ms = None
+        self._pending_reads = []
 
     @staticmethod
     def _public(reading: ParsedScoreboard) -> ScoreboardObservation:
         return ScoreboardObservation.model_validate(
             reading.model_dump(exclude={"raw_text", "raw_confidence"})
         )
+
+
+class ConsensusState(BaseModel):
+    period: int = Field(default=1, ge=1)
+    last_clock_ms: int | None = Field(default=None, ge=0)
+    accepted_score: tuple[int, int] | None = None
+    pending_score: tuple[int, int] | None = None
+    pending_since_ms: int | None = Field(default=None, ge=0)
+    pending_last_ms: int | None = Field(default=None, ge=0)
+    pending_reads: list[ParsedScoreboard] = Field(default_factory=list)

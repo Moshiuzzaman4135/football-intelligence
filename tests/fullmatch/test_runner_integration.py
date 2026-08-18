@@ -3,7 +3,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from football_intelligence.api import create_app
 from football_intelligence.domain import JobStatus
 from football_intelligence.fullmatch.media import probe_media
 from football_intelligence.fullmatch.runner import FullMatchRunner
@@ -67,6 +69,9 @@ def test_generated_121_second_fixture_runs_two_chunks_with_audio_and_no_raw_sql(
     assert completed.status is JobStatus.COMPLETED
     manifest = runner.status(job.id)
     assert len(manifest.chunks) == 2
+    assert len(manifest.source_sha256) == 64 and len(manifest.proxy_sha256) == 64
+    assert not Path(manifest.source.path).exists()
+    assert Path(manifest.proxy.path).is_file()
     assert all(chunk.status == "completed" for chunk in manifest.chunks)
     chunk_media = [probe_media(chunk.output_path) for chunk in manifest.chunks]
     assert [item.duration_ms for item in chunk_media] == [120_000, 1_000]
@@ -77,6 +82,29 @@ def test_generated_121_second_fixture_runs_two_chunks_with_audio_and_no_raw_sql(
     assert hashlib.sha256(output.read_bytes()).hexdigest() == manifest.final_artifact.sha256
     actual = probe_media(output)
     assert actual.video_codec == "h264"
+    assert actual.pixel_format == "yuv420p"
+    assert actual.container.startswith("mov,mp4")
     assert (actual.width, actual.height, actual.fps) == (160, 90, 1)
     assert abs(actual.duration_ms - 121_000) <= 1_000
     assert actual.has_audio is True
+    assert actual.audio_codec == "aac"
+    assert actual.audio_start_ms is not None
+    assert abs(actual.audio_start_ms - actual.video_start_ms) <= 100
+    assert actual.audio_duration_ms is not None
+    assert abs(actual.audio_duration_ms - actual.duration_ms) <= 1_000
+    artifact_bytes = output.read_bytes()
+    assert 0 <= artifact_bytes.find(b"moov") < artifact_bytes.find(b"mdat")
+
+    app = create_app(
+        repository=repository,
+        data_root=tmp_path,
+        pipeline_factory=lambda: None,
+        full_match_runner_factory=lambda: runner,
+    )
+    with TestClient(app) as client:
+        ranged = client.get(
+            f"/jobs/{job.id}/annotated-video", headers={"Range": "bytes=0-1023"}
+        )
+    assert ranged.status_code == 206
+    assert ranged.headers["content-type"] == "video/mp4"
+    assert ranged.content == artifact_bytes[:1024]

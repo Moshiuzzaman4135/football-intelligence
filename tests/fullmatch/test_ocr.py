@@ -98,10 +98,10 @@ def test_consensus_requires_five_seconds_for_score_change_and_emits_candidate():
     assert event.needs_review is True
     assert event.score_transition == "0-0 -> 1-0"
     assert event.source == ["ocr.tesseract.consensus"]
-    assert event.original_model_output == {
-        "raw_text": "AAA 1-0 BBB 10:15",
-        "raw_confidence": 0.82,
-    }
+    assert event.original_model_output["raw_text"] == "AAA 1-0 BBB 10:15"
+    assert event.original_model_output["raw_confidence"] == 0.82
+    assert len(event.original_model_output["supporting_reads"]) == 6
+    assert event.evidence[0].frame_refs == [250, 275, 300, 325, 350, 375]
 
 
 def test_consensus_rejects_clock_reversal_but_allows_halftime_reset():
@@ -140,6 +140,78 @@ def test_fake_ocr_engine_is_deterministic_and_bounded_to_supplied_results():
     assert engine.read(None, REGION) == expected[0]
     assert engine.read(None, REGION) == expected[1]
     assert engine.read(None, REGION) == OcrResult(text="", confidence=0)
+
+
+def test_missing_read_clears_pending_score_change_and_requires_new_consecutive_window():
+    parser = ScoreboardParser()
+    consensus = ScoreboardConsensus(job_id="job-1", stable_score_ms=5_000)
+
+    def parse(score: str, timestamp_ms: int):
+        parsed = parser.parse(
+            OcrResult(text=f"AAA {score} BBB 10:{timestamp_ms // 1000:02d}", confidence=0.9),
+            timestamp_ms=timestamp_ms,
+            frame_index=timestamp_ms // 40,
+            region=REGION,
+        )
+        assert parsed is not None
+        return parsed
+
+    consensus.observe(parse("0-0", 0))
+    for timestamp_ms in (1_000, 2_000, 3_000):
+        consensus.observe(parse("1-0", timestamp_ms))
+    consensus.observe_missing(4_000)
+    for timestamp_ms in (5_000, 6_000, 7_000, 8_000, 9_000):
+        accepted, event = consensus.observe(parse("1-0", timestamp_ms))
+        assert accepted is None and event is None
+
+    accepted, event = consensus.observe(parse("1-0", 10_000))
+
+    assert accepted is not None
+    assert event is not None
+    assert [item["timestamp_ms"] for item in event.original_model_output["supporting_reads"]] == [
+        5_000,
+        6_000,
+        7_000,
+        8_000,
+        9_000,
+        10_000,
+    ]
+
+
+def test_consensus_state_round_trip_preserves_pending_window_and_producer():
+    parser = ScoreboardParser()
+    consensus = ScoreboardConsensus(job_id="job-1", producer="ocr.fake", producer_version="2")
+    for text, timestamp in (("AAA 0-0 BBB 10:00", 0), ("AAA 1-0 BBB 10:01", 1_000)):
+        parsed = parser.parse(
+            OcrResult(text=text, confidence=0.9),
+            timestamp_ms=timestamp,
+            frame_index=timestamp // 40,
+            region=REGION,
+        )
+        assert parsed is not None
+        consensus.observe(parsed)
+
+    restored = ScoreboardConsensus(
+        job_id="job-1",
+        producer="ocr.fake",
+        producer_version="2",
+        state=consensus.snapshot(),
+    )
+
+    assert restored.snapshot() == consensus.snapshot()
+    event = None
+    for timestamp in (2_000, 3_000, 4_000, 5_000, 6_000):
+        parsed = parser.parse(
+            OcrResult(text=f"AAA 1-0 BBB 10:0{timestamp // 1000}", confidence=0.9),
+            timestamp_ms=timestamp,
+            frame_index=timestamp // 40,
+            region=REGION,
+        )
+        assert parsed is not None
+        _, event = restored.observe(parsed)
+    assert event is not None
+    assert event.source == ["ocr.fake.consensus"]
+    assert event.producer_version == "2"
 
 
 @pytest.mark.integration
