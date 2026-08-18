@@ -6,7 +6,7 @@ The mandatory M0-M8 vertical slice is implemented and has run both through the C
 
 ## CURRENT MILESTONE
 
-M16 mandatory vertical-slice validation and publication is complete. M9-M15 remain optional showcase upgrades and must not destabilize this checkpoint.
+Full-match production expansion Task 1: domain contracts and chunk planning. The published M0-M8 vertical slice remains the protected regression baseline.
 
 ## COMPLETED MILESTONES
 
@@ -22,7 +22,7 @@ M16 mandatory vertical-slice validation and publication is complete. M9-M15 rema
 
 ## CURRENT WORK
 
-None. The verified vertical slice is published at `https://github.com/Moshiuzzaman4135/football-intelligence`.
+Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch `feat/full-match-production` in `.worktrees/full-match-production`.
 
 ## LAST SUCCESSFUL COMMAND
 
@@ -30,7 +30,7 @@ Final rebuilt-image live job `eef77882-63ab-40a1-bed7-f657ca98461b` completed 30
 
 ## NEXT EXACT ACTION
 
-For optional M9 work, begin with `git status`, reread this harness, and add test-first dominant-jersey color clustering behind a `TeamClassifier` interface. Preserve the published M0-M8 demo behavior.
+Write and run the failing Task 1 tests for full-match domain schemas and deterministic 120-second/5-second-overlap chunk planning.
 
 ## FILES MODIFIED
 
