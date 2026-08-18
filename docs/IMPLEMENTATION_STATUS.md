@@ -2,11 +2,11 @@
 
 ## LAST VERIFIED STATE
 
-The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Tasks 1-2 provide normalized domain/chunk contracts plus durable SQLAlchemy job/stage stores, atomic lease-aware compare-and-set versions, a default three-attempt cap, delivery-bound idempotent completion, monotonic checkpoints, reversible Alembic migrations requiring `FOOTBALL_DATABASE_URL`, and a read-only/repeatable importer for the original SQLite repository. Task 3 adds restart-safe SQL upload sessions, race-safe deterministic job finalization, retryable terminal cleanup, direct-to-object-store resumable multipart upload with 16 MiB parts, a 12 GiB cap, opaque keys, owner/expiry enforcement, ETag and streamed SHA-256 validation, local adapters, and a real S3/MinIO adapter. Compose now bootstraps persistent PostgreSQL through Alembic before backend startup. The protected suite is now 148 passing tests plus two environment-gated integration tests.
+The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Tasks 1-2 provide normalized domain/chunk contracts plus durable SQLAlchemy job/stage stores, atomic lease-aware compare-and-set versions, a default three-attempt cap, delivery-bound idempotent completion, monotonic checkpoints, reversible Alembic migrations requiring `FOOTBALL_DATABASE_URL`, and a read-only/repeatable importer for the original SQLite repository. Task 3 adds restart-safe SQL upload sessions, race-safe deterministic job finalization, retryable terminal cleanup, direct-to-object-store resumable multipart upload with 16 MiB parts, a 12 GiB cap, opaque keys, owner/expiry enforcement, ETag and streamed SHA-256 validation, local adapters, and a real S3/MinIO adapter. The MVP runner adds bounded restartable processing, OCR, heat maps, and validated final media. Compose bootstraps persistent PostgreSQL through Alembic before backend startup. The protected suite is now 173 passing tests plus two environment-gated integration tests.
 
 ## CURRENT MILESTONE
 
-Stable handoff after full-match Task 3. The working short-clip M0-M8 showcase and durable full-match upload/control-plane foundation are complete. The 90-minute analysis runner remains the next milestone.
+The restartable single-host full-match MVP runner is implemented. A validated MinIO job now reaches safe localization, bounded proxy/chunks, candidate events, manual-ROI scoreboard OCR, a screen-space heat map, and validated annotated H.264 output while preserving the original short-clip path.
 
 ## COMPLETED MILESTONES
 
@@ -22,6 +22,7 @@ Stable handoff after full-match Task 3. The working short-clip M0-M8 showcase an
 - Full-match Task 1 normalized domain contracts and deterministic chunk planning.
 - Full-match Task 2 durable SQLAlchemy job/stage persistence, compare-and-set lifecycle operations, Alembic schema, protocol migration, and read-only legacy SQLite import.
 - Full-match Task 3 multipart upload service and API, in-memory/filesystem/S3 adapters, and MinIO Compose runtime.
+- Full-match MVP single-host runner with atomic manifest/resume, 120-second/5-second-overlap bounded chunks, manual Tesseract OCR, 32x18 screen-space heat map, non-overlap H.264 finalization/audio mux, and run/status/scoreboard/heat-map APIs.
 
 ## CURRENT WORK
 
@@ -29,11 +30,11 @@ Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch
 
 ## LAST SUCCESSFUL COMMAND
 
-`docker compose run --rm --no-deps -v "$PWD:/app" -e FOOTBALL_OBJECT_STORE_BACKEND=filesystem backend pytest -q` completed with 148 passed, two environment-gated tests skipped, and one known non-failing Starlette `TestClient` deprecation warning.
+`docker compose run --rm --no-deps -v "$PWD:/app" -e FOOTBALL_OBJECT_STORE_BACKEND=filesystem backend pytest -q` completed with 173 passed, two environment-gated tests skipped, and one known non-failing Starlette `TestClient` deprecation warning.
 
 ## NEXT EXACT ACTION
 
-Read `docs/DEEPSEEK_HANDOFF.md`, then implement `.superpowers/sdd/2026-08-18-full-match-production/mvp-runner-brief.md`: single-host S3 localization, validated proxy, atomic manifest, restartable 120-second chunks, manual-ROI Tesseract OCR, screen-space heat map, candidate fusion, annotated output, and a minimal browser uploader/results page. Do not begin with Celery or React.
+Run a representative real broadcast with a configured manual scoreboard ROI and review OCR/detector evidence quality before choosing the next model milestone. Distributed Celery execution, automatic ROI discovery, pitch calibration, and a React UI remain deferred.
 
 ## FILES MODIFIED
 
@@ -43,6 +44,7 @@ Implemented the video, detector, tracker/summary, overlay, pipeline, settings, A
 
 - Optional ignored local weight: `models/yolo11n.pt`, SHA-256 `0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1`.
 - Optional ignored Python packages: `data/ml-site/`, including Ultralytics 8.4.121 and local CUDA PyTorch runtime dependencies supplied by the existing test image.
+- Pinned image asset: `tessdata_fast` English model SHA-256 `7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2`, Apache-2.0.
 
 ## MODELS TESTED
 
@@ -69,6 +71,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 - Full-match Task 1 review fixes focused contracts/chunks: 25 passed in 0.13 seconds; complete suite: 89 passed in 2.16 seconds with the known non-failing Starlette `TestClient` deprecation warning; Ruff and `git diff --check` clean.
 - Full-match Task 3 recovery-focused upload/persistence suite: 77 passed and one opt-in integration skipped; live MinIO multipart integration: 1 passed; complete suite: 144 passed and one opt-in integration test skipped.
 - Full-match Task 3 Fix Round 2 upload/persistence suite: 54 passed and one opt-in integration skipped; complete suite: 148 passed and two environment-gated skips. An isolated empty-volume Compose project initialized PostgreSQL, ran Alembic to head, bootstrapped MinIO, returned backend health, and was removed with its volumes.
+- Full-match MVP focused suite: 25 passed. Complete protected suite: 173 passed, two environment-gated skips, and the known Starlette warning. The generated two-chunk H.264+AAC integration and real Tesseract crop run in the normal Docker suite.
 
 ## KNOWN FAILURES
 
@@ -79,11 +82,11 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 
 ## KNOWN LIMITATIONS
 
-The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; retention/pagination is future work. Team classification, RTSP ingestion, pitch calibration/radar, OCR/audio/VLM evidence, action spotting, and model-based event fusion are not implemented. Authentication arrives in Task 9, so `X-Owner-ID` is only the current ownership seam and nonlocal exposure remains unsupported. MinIO should have an operator-managed incomplete-multipart lifecycle rule longer than the 24-hour application expiry; completed sources must not use that expiry rule. No lockfile or remote heavy-model benchmark exists yet.
+The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; full-match raw observations are deliberately not persisted. Full-match OCR requires an operator-supplied broadcaster ROI and emits score-change candidates, never confirmed goals. Its heat map is screen-space/not pitch calibrated. Team classification, RTSP, action spotting, automatic ROI discovery, distributed execution, and model-based event fusion are not implemented. Authentication arrives later, so `X-Owner-ID` is only the current ownership seam and nonlocal exposure remains unsupported. MinIO should have an operator-managed incomplete-multipart lifecycle rule longer than the 24-hour application expiry; completed sources must not use that expiry rule. No lockfile or remote heavy-model benchmark exists yet.
 
 ## BLOCKERS
 
-None for the stable short-clip showcase or durable multipart upload foundation. The full-match analysis features are incomplete work, not an external blocker.
+None for the stable short-clip showcase, durable multipart upload foundation, or single-host full-match MVP. Deferred accuracy/distributed features are scope limitations, not external blockers.
 
 ## PUBLICATION
 

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -16,7 +16,10 @@ from pydantic import BaseModel, Field
 
 from football_intelligence.bus import EventBus
 from football_intelligence.detection.factory import build_detector
-from football_intelligence.domain import JobRecord, JobStatus, UploadSession
+from football_intelligence.domain import JobRecord, JobStatus, ScoreboardRegion, UploadSession
+from football_intelligence.fullmatch.manifest import RunnerOptions
+from football_intelligence.fullmatch.ocr import TesseractCliOcrEngine
+from football_intelligence.fullmatch.runner import FullMatchRunner
 from football_intelligence.object_store import (
     FilesystemObjectStore,
     MultipartPresignUnsupported,
@@ -71,6 +74,7 @@ def create_app(
     max_pending_jobs: int = 4,
     upload_service: MultipartUploadService | None = None,
     upload_store: UploadStore | None = None,
+    full_match_runner_factory: Callable[[], Any] | None = None,
 ) -> FastAPI:
     root = Path(data_root)
     upload_dir = root / "uploads"
@@ -79,8 +83,12 @@ def create_app(
     output_dir.mkdir(parents=True, exist_ok=True)
     executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="football-job")
     admission = BoundedSemaphore(max_pending_jobs)
+    full_match_admission = BoundedSemaphore(1)
+    full_match_active: set[str] = set()
+    full_match_active_lock = Lock()
     bus = EventBus()
     runtime_settings = settings or Settings()
+    runtime_object_store = None
     if upload_service is None:
         if runtime_settings.object_store_backend == "s3":
             if upload_store is None:
@@ -98,6 +106,7 @@ def create_app(
             object_store.ensure_bucket()
         else:
             object_store = FilesystemObjectStore(root / "object-store")
+        runtime_object_store = object_store
         upload_service = MultipartUploadService(
             object_store=object_store,
             job_store=repository,
@@ -117,6 +126,32 @@ def create_app(
                 tracker=IoUTracker(),
                 output_dir=output_dir,
                 bus=bus,
+                max_frame_errors=runtime_settings.max_frame_errors,
+            )
+
+    if full_match_runner_factory is None and runtime_object_store is not None:
+
+        def full_match_runner_factory() -> FullMatchRunner:
+            return FullMatchRunner(
+                repository=repository,
+                object_store=runtime_object_store,
+                bucket=runtime_settings.s3_bucket,
+                data_root=root,
+                detector_factory=lambda: build_detector(
+                    runtime_settings.detector,
+                    model_name=runtime_settings.model_name,
+                    device=runtime_settings.device,
+                ),
+                tracker_factory=IoUTracker,
+                ocr_engine=TesseractCliOcrEngine(str(runtime_settings.tessdata_dir)),
+                options=RunnerOptions(
+                    scoreboard_region=ScoreboardRegion(
+                        x=runtime_settings.scoreboard_region_x,
+                        y=runtime_settings.scoreboard_region_y,
+                        width=runtime_settings.scoreboard_region_width,
+                        height=runtime_settings.scoreboard_region_height,
+                    )
+                ),
                 max_frame_errors=runtime_settings.max_frame_errors,
             )
 
@@ -150,6 +185,7 @@ def create_app(
     application.state.bus = bus
     application.state.executor = executor
     application.state.upload_service = upload_service
+    application.state.full_match_runner_factory = full_match_runner_factory
 
     def get_job(job_id: str) -> JobRecord:
         try:
@@ -309,6 +345,102 @@ def create_app(
             raise HTTPException(status_code=503, detail="job executor is unavailable") from error
         response.status_code = status.HTTP_202_ACCEPTED
         return {"job_id": job_id, "status": "accepted"}
+
+    def get_full_match_runner() -> Any:
+        if full_match_runner_factory is None:
+            raise HTTPException(
+                status_code=503, detail="full-match runner is not configured"
+            )
+        return full_match_runner_factory()
+
+    @application.post("/jobs/{job_id}/full-match/run")
+    def run_full_match(job_id: str, response: Response) -> dict[str, str]:
+        job = get_job(job_id)
+        if job.status is JobStatus.COMPLETED:
+            return {"job_id": job_id, "status": "completed"}
+        if job.status not in {JobStatus.CREATED, JobStatus.RUNNING}:
+            raise HTTPException(
+                status_code=409, detail=f"cannot run {job.status.value} full-match job"
+            )
+        if not job.source_path.startswith("s3://"):
+            raise HTTPException(
+                status_code=409,
+                detail="full-match runner requires a completed object-store upload",
+            )
+        with full_match_active_lock:
+            if job_id in full_match_active:
+                response.status_code = status.HTTP_202_ACCEPTED
+                return {"job_id": job_id, "status": "running"}
+            if not full_match_admission.acquire(blocking=False):
+                raise HTTPException(status_code=429, detail="full-match runner is busy")
+            full_match_active.add(job_id)
+        try:
+            runner = get_full_match_runner()
+            if job.status is JobStatus.CREATED:
+                repository.transition(job_id, JobStatus.RUNNING)
+        except Exception:
+            with full_match_active_lock:
+                full_match_active.discard(job_id)
+            full_match_admission.release()
+            raise
+
+        def execute_full_match() -> None:
+            try:
+                runner.run(job_id)
+            except Exception:
+                _LOGGER.exception("full-match runner failed job=%s", job_id)
+            finally:
+                with full_match_active_lock:
+                    full_match_active.discard(job_id)
+                full_match_admission.release()
+
+        try:
+            executor.submit(execute_full_match)
+        except Exception as error:
+            with full_match_active_lock:
+                full_match_active.discard(job_id)
+            full_match_admission.release()
+            current = repository.get(job_id)
+            if current.status is JobStatus.RUNNING:
+                repository.transition(job_id, JobStatus.FAILED, error=str(error))
+            raise HTTPException(status_code=503, detail="job executor is unavailable") from error
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"job_id": job_id, "status": "running"}
+
+    @application.get("/jobs/{job_id}/full-match/status")
+    def full_match_status(job_id: str) -> dict[str, Any]:
+        job = get_job(job_id)
+        try:
+            manifest = get_full_match_runner().status(job_id)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=409, detail="full-match processing has not started"
+            ) from None
+        return {
+            "job_id": job_id,
+            "job_status": job.status,
+            "manifest": manifest.model_dump(mode="json"),
+        }
+
+    @application.get("/jobs/{job_id}/scoreboard")
+    def full_match_scoreboard(job_id: str) -> list[dict[str, Any]]:
+        get_job(job_id)
+        try:
+            observations = get_full_match_runner().scoreboard(job_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=409, detail="scoreboard is not ready") from None
+        return [observation.model_dump(mode="json") for observation in observations]
+
+    @application.get("/jobs/{job_id}/heat-map", response_class=FileResponse)
+    def full_match_heat_map(job_id: str) -> FileResponse:
+        get_job(job_id)
+        try:
+            path = get_full_match_runner().heat_map_path(job_id)
+        except (FileNotFoundError, RuntimeError):
+            raise HTTPException(status_code=409, detail="heat map is not ready") from None
+        if not path.is_file():
+            raise HTTPException(status_code=409, detail="heat map is not ready")
+        return FileResponse(path, media_type="image/png", filename=f"{job_id}.heat-map.png")
 
     @application.post("/jobs/{job_id}/stop", response_model=JobRecord)
     def stop_job(job_id: str) -> JobRecord:

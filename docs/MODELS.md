@@ -67,3 +67,7 @@ The command depends on a machine-local image and ignored package directory, so i
 5. Promote a real-match default only after recording checksum, exact command, runtime, FPS, VRAM, qualitative failures, and license.
 
 Remote commands will be documented here without credentials. The application runtime never calls SSH.
+
+## Verified Tesseract packaging
+
+The CPU image installs Tesseract 5.5.0 and downloads `eng.traineddata` from pinned `tessdata_fast` commit `87416418657359cb625c412a48b6e1d6d41c29bd`. The build verifies SHA-256 `7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2` and installs the upstream Apache-2.0 license at `/usr/share/doc/tessdata-fast/LICENSE`. A real container test read a generated manual scoreboard crop through the CLI/TSV adapter. This proves packaging and evidence plumbing, not broadcaster-specific OCR accuracy.

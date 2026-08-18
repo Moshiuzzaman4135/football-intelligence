@@ -26,9 +26,27 @@ class Settings(BaseSettings):
     s3_secret_key: SecretStr = SecretStr("")
     s3_bucket: str = "football-media"
     s3_region: str = "us-east-1"
+    tessdata_dir: Path = Path("/usr/share/tesseract-ocr/5/tessdata_fast")
+    scoreboard_region_x: float = Field(default=0, ge=0, le=1)
+    scoreboard_region_y: float = Field(default=0, ge=0, le=1)
+    scoreboard_region_width: float = Field(default=1, gt=0, le=1)
+    scoreboard_region_height: float = Field(default=0.2, gt=0, le=1)
+
+    @property
+    def scoreboard_region(self) -> tuple[float, float, float, float]:
+        return (
+            self.scoreboard_region_x,
+            self.scoreboard_region_y,
+            self.scoreboard_region_width,
+            self.scoreboard_region_height,
+        )
 
     @model_validator(mode="after")
     def validate_object_store(self) -> "Settings":
+        if self.scoreboard_region_x + self.scoreboard_region_width > 1:
+            raise ValueError("scoreboard region exceeds frame width")
+        if self.scoreboard_region_y + self.scoreboard_region_height > 1:
+            raise ValueError("scoreboard region exceeds frame height")
         if self.object_store_backend == "s3" and not all(
             (
                 self.s3_endpoint_url,

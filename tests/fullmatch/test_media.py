@@ -1,0 +1,136 @@
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from football_intelligence.fullmatch.media import (
+    MAX_MATCH_DURATION_MS,
+    MediaProbe,
+    build_proxy,
+    localize_s3_source,
+    parse_same_bucket_uri,
+    probe_media,
+    validate_source_media,
+)
+
+
+class StreamingStore:
+    def __init__(self, chunks, *, failure: Exception | None = None):
+        self.chunks = chunks
+        self.failure = failure
+        self.requested_key = None
+
+    def iter_object(self, object_key, chunk_size=1024 * 1024):
+        self.requested_key = object_key
+        yield from self.chunks
+        if self.failure:
+            raise self.failure
+
+
+def test_same_bucket_uri_returns_only_opaque_key():
+    assert (
+        parse_same_bucket_uri(
+            "s3://football-media/uploads/opaque/source.mp4", "football-media"
+        )
+        == "uploads/opaque/source.mp4"
+    )
+
+    for unsafe in (
+        "s3://another-bucket/uploads/opaque/source.mp4",
+        "s3://football-media/uploads/../secret.mp4",
+        "s3://football-media/uploads/%2e%2e/secret.mp4",
+        "s3://football-media/uploads/source.mp4?versionId=secret",
+        "file:///tmp/source.mp4",
+    ):
+        with pytest.raises(ValueError):
+            parse_same_bucket_uri(unsafe, "football-media")
+
+
+def test_localization_streams_to_atomic_final_file(tmp_path: Path):
+    store = StreamingStore([b"first", b"second"])
+
+    localized = localize_s3_source(
+        store,
+        "s3://football-media/uploads/opaque/source.mp4",
+        bucket="football-media",
+        destination_dir=tmp_path,
+    )
+
+    assert localized == tmp_path / "source.mp4"
+    assert localized.read_bytes() == b"firstsecond"
+    assert store.requested_key == "uploads/opaque/source.mp4"
+    assert not (tmp_path / "source.partial").exists()
+
+
+def test_failed_localization_leaves_no_visible_or_partial_source(tmp_path: Path):
+    store = StreamingStore([b"partial"], failure=OSError("connection lost"))
+
+    with pytest.raises(OSError, match="connection lost"):
+        localize_s3_source(
+            store,
+            "s3://football-media/uploads/opaque/source.mp4",
+            bucket="football-media",
+            destination_dir=tmp_path,
+        )
+
+    assert not (tmp_path / "source.mp4").exists()
+    assert not (tmp_path / "source.partial").exists()
+
+
+def test_source_validation_rejects_duration_and_unsupported_container():
+    valid = MediaProbe(
+        path="source.mp4",
+        container="mov,mp4,m4a,3gp,3g2,mj2",
+        video_codec="h264",
+        width=1920,
+        height=1080,
+        fps=50,
+        frame_count=100,
+        duration_ms=MAX_MATCH_DURATION_MS,
+        has_audio=True,
+    )
+
+    validate_source_media(valid)
+    with pytest.raises(ValueError, match="150 minutes"):
+        validate_source_media(valid.model_copy(update={"duration_ms": MAX_MATCH_DURATION_MS + 1}))
+    with pytest.raises(ValueError, match="container"):
+        validate_source_media(valid.model_copy(update={"container": "avi"}))
+
+
+def test_proxy_is_h264_capped_at_720p_25fps_and_preserves_audio(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=30:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source),
+        ],
+        check=True,
+    )
+
+    proxy = build_proxy(source, tmp_path / "proxy.mp4")
+    metadata = probe_media(proxy)
+
+    assert metadata.video_codec == "h264"
+    assert (metadata.width, metadata.height) == (640, 360)
+    assert metadata.fps == pytest.approx(25, abs=0.01)
+    assert metadata.duration_ms == pytest.approx(2000, abs=50)
+    assert metadata.has_audio is True
+    assert not (tmp_path / "proxy.partial.mp4").exists()

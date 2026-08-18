@@ -1,6 +1,6 @@
 # Football Video Intelligence
 
-A production-minded showcase that turns a short football clip into normalized detections and visual tracks, evidence-backed temporal event candidates, an annotated H.264 MP4, a FastAPI job API, and a Streamlit timeline.
+A production-minded showcase that turns a football video into normalized detections and visual tracks, evidence-backed temporal event candidates, an annotated H.264 MP4, a FastAPI job API, and a Streamlit timeline. The short-clip path remains available; completed MinIO uploads can also run through a restartable, bounded full-match MVP.
 
 The default image is deliberately credential-free and offline-capable. It uses a deterministic OpenCV color detector plus IoU tracking so the complete workflow is always demonstrable. An optional Ultralytics adapter has also been run successfully with YOLO11n on the local RTX 3050; it is kept outside the core image because of package size and licensing.
 
@@ -48,9 +48,11 @@ docker compose run --rm --no-deps -v "$PWD:/app" backend \
 
 Generated uploads, SQLite metadata, outputs, weights, and downloaded fixtures are ignored by Git. See `docs/DEMO.md` for the narrated walkthrough and `docs/MODELS.md` for the optional GPU/YOLO command.
 
+For a completed multipart-upload job, start or resume the single-host full-match runner with `POST /jobs/{id}/full-match/run`. Inspect `GET /jobs/{id}/full-match/status`, `/scoreboard`, `/heat-map`, `/events`, and `/annotated-video`. The status manifest checkpoints 120-second chunks with five seconds of context; a repeated run request resumes an orphaned running job after process restart and only one full match is admitted at a time.
+
 ## Current capability boundary
 
-The short-video UI flow is usable end to end. The backend also supports durable resumable full-match upload to MinIO and creates a job only after validation. Processing that `s3://` full-match job, scoreboard OCR, heat maps, and robust goal/free-kick spotting are the next implementation milestone; see `docs/DEEPSEEK_HANDOFF.md`.
+The short-video UI flow is usable end to end. The backend also supports durable resumable full-match upload to MinIO, creates a job only after validation, and processes that `s3://` source through safe localization, a 720p/25 proxy, restartable chunks, manual-ROI Tesseract OCR, a screen-space heat map, and a validated annotated video. OCR score changes are reviewable candidates only; robust semantic goal/free-kick spotting and production distributed execution remain later milestones.
 
 ## What this prototype does not claim
 

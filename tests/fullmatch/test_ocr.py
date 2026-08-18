@@ -1,0 +1,176 @@
+from collections import deque
+
+import cv2
+import numpy as np
+import pytest
+
+from football_intelligence.domain import EventStatus, ScoreboardRegion
+from football_intelligence.fullmatch.ocr import (
+    FakeOcrEngine,
+    OcrResult,
+    ScoreboardConsensus,
+    ScoreboardParser,
+    TesseractCliOcrEngine,
+)
+
+REGION = ScoreboardRegion(x=0, y=0, width=1, height=0.2)
+
+
+def test_scoreboard_parser_accepts_common_clock_score_formats_and_raw_evidence():
+    parser = ScoreboardParser()
+
+    parsed = parser.parse(
+        OcrResult(text="ARS 2 - 1 CHE   67:04", confidence=0.88),
+        timestamp_ms=1_000,
+        frame_index=25,
+        region=REGION,
+    )
+
+    assert parsed is not None
+    assert parsed.match_clock_ms == 4_024_000
+    assert (parsed.home_team, parsed.away_team) == ("ARS", "CHE")
+    assert (parsed.home_score, parsed.away_score) == (2, 1)
+    assert parsed.raw_text == "ARS 2 - 1 CHE   67:04"
+    assert parsed.raw_confidence == 0.88
+
+    compact = parser.parse(
+        OcrResult(text="12:34 HOME 0:0 AWAY", confidence=0.75),
+        timestamp_ms=2_000,
+        frame_index=50,
+        region=REGION,
+    )
+    assert compact is not None
+    assert compact.match_clock_ms == 754_000
+    assert (compact.home_score, compact.away_score) == (0, 0)
+
+
+def test_parser_returns_unknown_reading_instead_of_inventing_score():
+    parsed = ScoreboardParser().parse(
+        OcrResult(text="LIVE SPORTS", confidence=0.42),
+        timestamp_ms=1_000,
+        frame_index=25,
+        region=REGION,
+    )
+
+    assert parsed is None
+
+
+def test_consensus_requires_five_seconds_for_score_change_and_emits_candidate():
+    parser = ScoreboardParser()
+    consensus = ScoreboardConsensus(job_id="job-1", stable_score_ms=5_000)
+    initial = parser.parse(
+        OcrResult(text="AAA 0-0 BBB 10:00", confidence=0.9),
+        timestamp_ms=0,
+        frame_index=0,
+        region=REGION,
+    )
+    assert initial is not None
+    accepted, event = consensus.observe(initial)
+    assert accepted is not None
+    assert event is None
+
+    for second in range(10, 15):
+        reading = parser.parse(
+            OcrResult(text=f"AAA 1-0 BBB 10:{second:02d}", confidence=0.8),
+            timestamp_ms=(second - 10) * 1_000 + 10_000,
+            frame_index=second * 25,
+            region=REGION,
+        )
+        assert reading is not None
+        accepted, event = consensus.observe(reading)
+        assert accepted is None
+        assert event is None
+
+    confirmed = parser.parse(
+        OcrResult(text="AAA 1-0 BBB 10:15", confidence=0.82),
+        timestamp_ms=15_000,
+        frame_index=375,
+        region=REGION,
+    )
+    assert confirmed is not None
+    accepted, event = consensus.observe(confirmed)
+
+    assert accepted is not None
+    assert (accepted.home_score, accepted.away_score) == (1, 0)
+    assert event is not None
+    assert event.event_type == "score_change_candidate"
+    assert event.status is EventStatus.CANDIDATE
+    assert event.needs_review is True
+    assert event.score_transition == "0-0 -> 1-0"
+    assert event.source == ["ocr.tesseract.consensus"]
+    assert event.original_model_output == {
+        "raw_text": "AAA 1-0 BBB 10:15",
+        "raw_confidence": 0.82,
+    }
+
+
+def test_consensus_rejects_clock_reversal_but_allows_halftime_reset():
+    parser = ScoreboardParser()
+    consensus = ScoreboardConsensus(job_id="job-1")
+
+    def reading(text: str, timestamp_ms: int):
+        parsed = parser.parse(
+            OcrResult(text=text, confidence=0.9),
+            timestamp_ms=timestamp_ms,
+            frame_index=timestamp_ms // 40,
+            region=REGION,
+        )
+        assert parsed is not None
+        return parsed
+
+    first, _ = consensus.observe(reading("AAA 0-0 BBB 45:00", 0))
+    reversed_clock, _ = consensus.observe(reading("AAA 0-0 BBB 44:59", 1_000))
+    second_half, _ = consensus.observe(reading("AAA 0-0 BBB 00:05", 2_000))
+
+    assert first is not None and first.period == 1
+    assert reversed_clock is None
+    assert second_half is not None and second_half.period == 2
+    assert second_half.match_clock_ms == 5_000
+
+
+def test_fake_ocr_engine_is_deterministic_and_bounded_to_supplied_results():
+    expected = deque(
+        [
+            OcrResult(text="AAA 0-0 BBB 00:01", confidence=0.9),
+            OcrResult(text="AAA 0-0 BBB 00:02", confidence=0.8),
+        ]
+    )
+    engine = FakeOcrEngine(list(expected))
+
+    assert engine.read(None, REGION) == expected[0]
+    assert engine.read(None, REGION) == expected[1]
+    assert engine.read(None, REGION) == OcrResult(text="", confidence=0)
+
+
+@pytest.mark.integration
+def test_tesseract_cli_reads_only_the_manual_scoreboard_crop():
+    frame = np.full((240, 800, 3), 255, dtype=np.uint8)
+    cv2.putText(
+        frame,
+        "AAA 1-0 BBB 12:34",
+        (20, 70),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.4,
+        (0, 0, 0),
+        3,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        "TEXT OUTSIDE ROI",
+        (20, 200),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (0, 0, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    engine = TesseractCliOcrEngine(
+        "/usr/share/tesseract-ocr/5/tessdata_fast"
+    )
+
+    result = engine.read(frame, ScoreboardRegion(x=0, y=0, width=1, height=0.4))
+
+    assert "OUTSIDE" not in result.text
+    assert "AAA" in result.text and ":" in result.text
+    assert 0 < result.confidence <= 1

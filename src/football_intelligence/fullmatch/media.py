@@ -1,0 +1,244 @@
+"""Safe localization and validated FFmpeg media preparation for full matches."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+from pathlib import Path, PurePosixPath
+from typing import Protocol
+from urllib.parse import unquote, urlsplit
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+MAX_MATCH_DURATION_MS = 150 * 60 * 1000
+_ALLOWED_CONTAINERS = {"mov", "mp4", "m4a", "3gp", "3g2", "mj2", "matroska"}
+
+
+class StreamingObjectStore(Protocol):
+    def iter_object(self, object_key: str, chunk_size: int = 1024 * 1024): ...
+
+
+class MediaProbe(BaseModel):
+    path: str
+    container: str
+    video_codec: str = Field(min_length=1)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    fps: float = Field(gt=0)
+    frame_count: int = Field(gt=0)
+    duration_ms: int = Field(gt=0)
+    has_audio: bool
+
+
+def parse_same_bucket_uri(uri: str, bucket: str) -> str:
+    parsed = urlsplit(uri)
+    if parsed.scheme != "s3" or parsed.netloc != bucket:
+        raise ValueError("source must use the configured S3 bucket")
+    if parsed.query or parsed.fragment:
+        raise ValueError("versioned or parameterized S3 source URIs are not accepted")
+    key = unquote(parsed.path.lstrip("/"))
+    path = PurePosixPath(key)
+    if not key or path.is_absolute() or ".." in path.parts:
+        raise ValueError("S3 source key must be an opaque relative key")
+    return key
+
+
+def localize_s3_source(
+    object_store: StreamingObjectStore,
+    uri: str,
+    *,
+    bucket: str,
+    destination_dir: str | Path,
+) -> Path:
+    key = parse_same_bucket_uri(uri, bucket)
+    root = Path(destination_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    suffix = PurePosixPath(key).suffix.lower()
+    final_path = root / f"source{suffix}"
+    partial_path = root / "source.partial"
+    partial_path.unlink(missing_ok=True)
+    try:
+        with partial_path.open("xb") as target:
+            for chunk in object_store.iter_object(key):
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        partial_path.replace(final_path)
+        _fsync_directory(root)
+    except Exception:
+        partial_path.unlink(missing_ok=True)
+        raise
+    return final_path
+
+
+def probe_media(path: str | Path) -> MediaProbe:
+    source = Path(path)
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    video = next(
+        (stream for stream in payload.get("streams", []) if stream.get("codec_type") == "video"),
+        None,
+    )
+    if video is None:
+        raise ValueError("media does not contain a video stream")
+    duration = float(video.get("duration") or payload.get("format", {}).get("duration") or 0)
+    fps = _parse_rate(video.get("avg_frame_rate") or video.get("r_frame_rate"))
+    frame_count = int(video.get("nb_frames") or round(duration * fps))
+    return MediaProbe(
+        path=str(source),
+        container=str(payload.get("format", {}).get("format_name", "")),
+        video_codec=str(video.get("codec_name", "")),
+        width=int(video.get("width", 0)),
+        height=int(video.get("height", 0)),
+        fps=fps,
+        frame_count=frame_count,
+        duration_ms=round(duration * 1000),
+        has_audio=any(
+            stream.get("codec_type") == "audio" for stream in payload.get("streams", [])
+        ),
+    )
+
+
+def validate_source_media(probe: MediaProbe) -> None:
+    containers = set(probe.container.split(","))
+    if not containers & _ALLOWED_CONTAINERS:
+        raise ValueError(f"unsupported media container: {probe.container}")
+    if probe.duration_ms > MAX_MATCH_DURATION_MS:
+        raise ValueError("full-match source exceeds 150 minutes")
+
+
+def build_proxy(source: str | Path, destination: str | Path) -> Path:
+    source_path = Path(source)
+    destination_path = Path(destination)
+    original = probe_media(source_path)
+    validate_source_media(original)
+    width, height = _bounded_geometry(original.width, original.height)
+    target_fps = min(25.0, original.fps)
+    temporary = destination_path.with_name(f"{destination_path.stem}.partial.mp4")
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary.unlink(missing_ok=True)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-vf",
+                f"scale={width}:{height},fps={target_fps:g}",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                str(temporary),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        actual = probe_media(temporary)
+        _validate_proxy(actual, original, width, height, target_fps)
+        temporary.replace(destination_path)
+        _fsync_directory(destination_path.parent)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return destination_path
+
+
+def _validate_proxy(
+    actual: MediaProbe,
+    original: MediaProbe,
+    width: int,
+    height: int,
+    fps: float,
+) -> None:
+    if actual.video_codec != "h264":
+        raise RuntimeError(f"proxy codec is not H.264: {actual.video_codec}")
+    if (actual.width, actual.height) != (width, height):
+        raise RuntimeError("proxy geometry does not match the bounded geometry")
+    if abs(actual.fps - fps) > 0.01:
+        raise RuntimeError("proxy FPS does not match the bounded frame rate")
+    tolerance_ms = max(100, round(2000 / fps))
+    if abs(actual.duration_ms - original.duration_ms) > tolerance_ms:
+        raise RuntimeError("proxy duration changed outside tolerance")
+    if original.has_audio and not actual.has_audio:
+        raise RuntimeError("proxy lost the source audio stream")
+
+
+def _bounded_geometry(width: int, height: int) -> tuple[int, int]:
+    scale = min(1.0, 1280 / width, 720 / height)
+    bounded_width = max(2, int(width * scale) // 2 * 2)
+    bounded_height = max(2, int(height * scale) // 2 * 2)
+    return bounded_width, bounded_height
+
+
+def _parse_rate(value: str | None) -> float:
+    if not value:
+        return 0.0
+    numerator, separator, denominator = value.partition("/")
+    if separator:
+        divisor = float(denominator)
+        return float(numerator) / divisor if divisor else 0.0
+    return float(value)
+
+
+def sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def atomic_json_write(path: str | Path, payload: object) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid4()}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as output:
+            json.dump(payload, output, separators=(",", ":"), sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(target)
+        _fsync_directory(target.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

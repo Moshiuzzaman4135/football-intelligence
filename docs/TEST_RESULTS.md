@@ -94,3 +94,11 @@ Fresh image checks:
 - Abort and failed-validation storage outages remain durable cleanup-pending terminal states and retry before the original session expiry. The lifecycle loop survives a repository outage and succeeds on its next tick.
 - Focused upload/persistence suite: 54 passed and one opt-in MinIO skip. Full protected suite: 148 passed, two environment-gated skips, and the known Starlette warning.
 - A fresh isolated Compose project created empty PostgreSQL/MinIO volumes, reached healthy PostgreSQL, ran Alembic to head before backend startup, returned `{"status":"ok"}`, and contained `jobs`, `upload_sessions`, and `alembic_version`; the project and volumes were then removed.
+
+## Restartable full-match MVP runner — 2026-08-18
+
+- RED evidence captured missing media/OCR/heat-map/manifest/runner modules and missing full-match API seams. The real media test then reproduced final concat drift (`0.9837` versus `1.0` FPS); final PTS normalization fixed it. A rebuilt-image OCR test exposed a missing TSV config when using the isolated `tessdata_fast` directory; the adapter now enables TSV output explicitly.
+- Focused Docker suite covers exact-bucket URI rejection, streamed atomic localization/failure cleanup, 150-minute/container limits, 720p/25 H.264 proxy/audio, OCR formats/monotonic and halftime consensus/raw evidence, candidate-only score changes, real Tesseract crop execution, fixed 32x18 heat-map bounds/PNG, atomic manifest/immutable options, overlap output ranges, crash/restart/no-reprocessing, stop, deterministic namespaced IDs, bounded observations, absent raw SQL tracks, API idempotence/restart/single admission, range media, and artifact reads.
+- A generated 121-second 160x90/1 FPS H.264+AAC source ran through Docker as two planned chunks. The validated chunks were H.264/no-audio with durations exactly 120 and 1 seconds; the final was H.264, 160x90, 1 FPS, approximately 121 seconds, and retained one audio stream.
+- The rebuilt image contains Tesseract 5.5.0 and the pinned `tessdata_fast` English SHA-256 `7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2`; its real crop test passed.
+- Focused full-match suite: 25 passed. Complete protected suite: 173 passed, two environment-gated skips, and the pre-existing Starlette `TestClient` warning.
