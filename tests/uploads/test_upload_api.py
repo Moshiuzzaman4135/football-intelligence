@@ -132,3 +132,33 @@ def test_app_lifespan_schedules_expired_upload_cleanup(tmp_path: Path):
 
     with TestClient(app):
         assert cleaned.wait(timeout=1)
+
+
+def test_app_lifespan_retries_cleanup_after_repository_outage(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.db")
+    uploads = MultipartUploadService(
+        object_store=InMemoryObjectStore(), job_store=repository
+    )
+    recovered = Event()
+    attempts = 0
+
+    def cleanup_expired(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("database unavailable")
+        recovered.set()
+        return 0
+
+    uploads.cleanup_expired = cleanup_expired
+    app = create_app(
+        repository=repository,
+        data_root=tmp_path,
+        upload_service=uploads,
+        settings=Settings(_env_file=None, upload_cleanup_interval_seconds=0.01),
+    )
+
+    with TestClient(app):
+        assert recovered.wait(timeout=1)
+
+    assert attempts >= 2

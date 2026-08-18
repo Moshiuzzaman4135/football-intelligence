@@ -87,3 +87,10 @@ Fresh image checks:
 - Durable SQLAlchemy upload-session, restart, two-instance CAS, ambiguous S3 completion, deterministic job commit replay, per-upload concurrency, expiry cleanup/retry, atomic filesystem, signed length/checksum, S3 error, API lifecycle, settings, and migration coverage passed.
 - Real MinIO integration passed with distinct application credentials, rejected an oversized signed PUT, resumed parts, completed and validated the source, and finally aborted/deleted storage safely.
 - Complete protected suite: 144 passed, one opt-in MinIO test skipped by default, and the known non-failing Starlette `TestClient` deprecation warning.
+
+## Full-match multipart recovery fix round 2 — 2026-08-18
+
+- Barrier coverage proves expiry cleanup cannot delete an object after job finalization begins; concurrent completion still converges on one job.
+- Abort and failed-validation storage outages remain durable cleanup-pending terminal states and retry before the original session expiry. The lifecycle loop survives a repository outage and succeeds on its next tick.
+- Focused upload/persistence suite: 54 passed and one opt-in MinIO skip. Full protected suite: 148 passed, two environment-gated skips, and the known Starlette warning.
+- A fresh isolated Compose project created empty PostgreSQL/MinIO volumes, reached healthy PostgreSQL, ran Alembic to head before backend startup, returned `{"status":"ok"}`, and contained `jobs`, `upload_sessions`, and `alembic_version`; the project and volumes were then removed.

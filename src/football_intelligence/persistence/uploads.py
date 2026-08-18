@@ -65,17 +65,25 @@ class SQLAlchemyUploadRepository:
             rows = session.scalars(
                 select(UploadRow)
                 .where(
-                    UploadRow.expires_at <= now,
                     or_(
-                        UploadRow.status.in_(
-                            (
-                                UploadStatus.ACTIVE.value,
-                                UploadStatus.COMPLETING.value,
-                                UploadStatus.VALIDATED.value,
-                            )
+                        and_(
+                            UploadRow.expires_at <= now,
+                            UploadRow.status.in_(
+                                (
+                                    UploadStatus.ACTIVE.value,
+                                    UploadStatus.COMPLETING.value,
+                                    UploadStatus.VALIDATED.value,
+                                )
+                            ),
                         ),
                         and_(
-                            UploadRow.status == UploadStatus.EXPIRED.value,
+                            UploadRow.status.in_(
+                                (
+                                    UploadStatus.ABORTED.value,
+                                    UploadStatus.FAILED.value,
+                                    UploadStatus.EXPIRED.value,
+                                )
+                            ),
                             UploadRow.cleanup_completed_at.is_(None),
                         ),
                     ),
@@ -133,17 +141,23 @@ class InMemoryUploadRepository:
             matches = [
                 item.model_copy(deep=True)
                 for item in self._records.values()
-                if item.expires_at <= now
-                and (
-                    item.status in {
+                if (
+                    item.expires_at <= now
+                    and item.status
+                    in {
                         UploadStatus.ACTIVE,
                         UploadStatus.COMPLETING,
                         UploadStatus.VALIDATED,
                     }
-                    or (
-                        item.status is UploadStatus.EXPIRED
-                        and item.cleanup_completed_at is None
-                    )
+                )
+                or (
+                    item.status
+                    in {
+                        UploadStatus.ABORTED,
+                        UploadStatus.FAILED,
+                        UploadStatus.EXPIRED,
+                    }
+                    and item.cleanup_completed_at is None
                 )
             ]
         return sorted(matches, key=lambda item: (item.expires_at, item.id))[:limit]

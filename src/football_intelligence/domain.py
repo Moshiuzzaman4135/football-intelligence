@@ -45,6 +45,7 @@ class UploadStatus(StrEnum):
     ACTIVE = "active"
     COMPLETING = "completing"
     VALIDATED = "validated"
+    FINALIZING = "finalizing"
     COMPLETED = "completed"
     FAILED = "failed"
     ABORTED = "aborted"

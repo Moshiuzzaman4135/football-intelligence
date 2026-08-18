@@ -19,6 +19,8 @@ services:
       FOOTBALL_S3_SECRET_KEY: "${FOOTBALL_S3_SECRET_KEY:?set a non-root MinIO application secret key}"
       FOOTBALL_S3_BUCKET: "${FOOTBALL_S3_BUCKET:-football-media}"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
     ports:
@@ -30,6 +32,36 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+
+  postgres:
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_DB: football
+      POSTGRES_USER: football_app
+      POSTGRES_PASSWORD: "${FOOTBALL_POSTGRES_PASSWORD:?set the PostgreSQL application password}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U football_app -d football"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      args:
+        APP_UID: "${FOOTBALL_UID:-1000}"
+        APP_GID: "${FOOTBALL_GID:-1000}"
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FOOTBALL_DATABASE_URL: "${FOOTBALL_DATABASE_URL:?set FOOTBALL_DATABASE_URL to the PostgreSQL application URL}"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   minio:
     image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -88,3 +120,4 @@ services:
 
 volumes:
   minio-data:
+  postgres-data:

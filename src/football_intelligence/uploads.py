@@ -41,6 +41,11 @@ _EXPIRABLE = {
     UploadStatus.COMPLETING,
     UploadStatus.VALIDATED,
 }
+_CLEANUP_PENDING = {
+    UploadStatus.ABORTED,
+    UploadStatus.FAILED,
+    UploadStatus.EXPIRED,
+}
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -248,7 +253,15 @@ class MultipartUploadService:
                 upload = claimed or self._owned_upload(upload_id, owner_id)
             if upload.status is UploadStatus.COMPLETING:
                 upload = self._complete_and_validate(upload)
-            if upload.status is not UploadStatus.VALIDATED:
+            if upload.status is UploadStatus.VALIDATED:
+                finalizing = self.upload_store.compare_and_set(
+                    upload.id,
+                    expected_status=UploadStatus.VALIDATED,
+                    expected_version=upload.version,
+                    values={"status": UploadStatus.FINALIZING.value},
+                )
+                upload = finalizing or self._owned_upload(upload_id, owner_id)
+            if upload.status is not UploadStatus.FINALIZING:
                 if upload.status is UploadStatus.COMPLETED and upload.job_id:
                     return self.job_store.get(upload.job_id)
                 raise UploadConflict(f"upload is {upload.status.value}")
@@ -259,7 +272,7 @@ class MultipartUploadService:
             )
             completed = self.upload_store.compare_and_set(
                 upload.id,
-                expected_status=UploadStatus.VALIDATED,
+                expected_status=UploadStatus.FINALIZING,
                 expected_version=upload.version,
                 values={
                     "status": UploadStatus.COMPLETED.value,
@@ -283,7 +296,11 @@ class MultipartUploadService:
             upload = self._owned_upload(upload_id, owner_id)
             if upload.status is UploadStatus.COMPLETED:
                 raise UploadConflict("completed upload cannot be aborted")
-            if upload.status in {UploadStatus.ABORTED, UploadStatus.EXPIRED}:
+            if upload.status is UploadStatus.ABORTED:
+                if upload.cleanup_completed_at is None:
+                    self._try_cleanup(upload, _now(now))
+                return
+            if upload.status is UploadStatus.EXPIRED:
                 return
             if upload.status is UploadStatus.FAILED:
                 raise UploadConflict("failed upload cannot be aborted")
@@ -296,7 +313,7 @@ class MultipartUploadService:
             )
             if aborted is None:
                 raise UploadConflict("upload state changed during abort")
-            self._cleanup_storage(upload)
+            self._try_cleanup(aborted, _now(now))
 
     def cleanup_expired(
         self, *, now: datetime | None = None, limit: int = 100
@@ -306,9 +323,9 @@ class MultipartUploadService:
         for candidate in self.upload_store.list_expired(now=current_time, limit=limit):
             with self._lock_for(candidate.id):
                 current = self.upload_store.get(candidate.id)
-                if current.expires_at > current_time:
-                    continue
                 if current.status in _EXPIRABLE:
+                    if current.expires_at > current_time:
+                        continue
                     expired = self.upload_store.compare_and_set(
                         current.id,
                         expected_status=current.status,
@@ -318,24 +335,12 @@ class MultipartUploadService:
                     if expired is None:
                         continue
                     current = expired
-                elif current.status is not UploadStatus.EXPIRED:
+                elif current.status not in _CLEANUP_PENDING:
                     continue
                 if current.cleanup_completed_at is not None:
                     continue
-                try:
-                    self._cleanup_storage(current)
-                except Exception:
-                    _LOGGER.exception("upload cleanup failed for %s", current.id)
-                    continue
-                marked = self.upload_store.compare_and_set(
-                    current.id,
-                    expected_status=UploadStatus.EXPIRED,
-                    expected_version=current.version,
-                    values={"cleanup_completed_at": current_time},
-                )
-                if marked is None:
-                    continue
-                cleaned += 1
+                if self._try_cleanup(current, current_time):
+                    cleaned += 1
         return cleaned
 
     def _complete_and_validate(self, upload: UploadRecord) -> UploadRecord:
@@ -378,7 +383,11 @@ class MultipartUploadService:
         if validated is not None:
             return validated
         current = self.upload_store.get(upload.id)
-        if current.status in {UploadStatus.VALIDATED, UploadStatus.COMPLETED}:
+        if current.status in {
+            UploadStatus.VALIDATED,
+            UploadStatus.FINALIZING,
+            UploadStatus.COMPLETED,
+        }:
             return current
         if current.status in {UploadStatus.EXPIRED, UploadStatus.ABORTED}:
             self.object_store.delete_object(upload.object_key)
@@ -415,9 +424,9 @@ class MultipartUploadService:
             expected_version=upload.version,
             values={"status": UploadStatus.FAILED.value},
         )
-        self.object_store.delete_object(upload.object_key)
         if failed is None:
             raise UploadConflict("upload state changed during rejection")
+        self._try_cleanup(failed, datetime.now(UTC))
         raise UploadConflict(f"completed object {field} does not match declaration")
 
     def _owned_upload(self, upload_id: str, owner_id: str) -> UploadRecord:
@@ -448,18 +457,22 @@ class MultipartUploadService:
                 values={"status": UploadStatus.EXPIRED.value},
             )
             if expired is not None:
-                try:
-                    self._cleanup_storage(expired)
-                except Exception:
-                    _LOGGER.exception("upload cleanup failed for %s", upload.id)
-                else:
-                    self.upload_store.compare_and_set(
-                        expired.id,
-                        expected_status=UploadStatus.EXPIRED,
-                        expected_version=expired.version,
-                        values={"cleanup_completed_at": current_time},
-                    )
+                self._try_cleanup(expired, current_time)
             raise UploadExpired("upload session expired")
+
+    def _try_cleanup(self, upload: UploadRecord, cleaned_at: datetime) -> bool:
+        try:
+            self._cleanup_storage(upload)
+        except Exception:
+            _LOGGER.exception("upload cleanup failed for %s", upload.id)
+            return False
+        marked = self.upload_store.compare_and_set(
+            upload.id,
+            expected_status=upload.status,
+            expected_version=upload.version,
+            values={"cleanup_completed_at": cleaned_at},
+        )
+        return marked is not None
 
     def _cleanup_storage(self, upload: UploadRecord) -> None:
         self.object_store.abort_multipart(

@@ -1,6 +1,7 @@
 """FastAPI lifecycle and artifact API."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -44,6 +45,7 @@ from football_intelligence.uploads import (
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+_LOGGER = logging.getLogger(__name__)
 
 
 class CreateMultipartUploadRequest(BaseModel):
@@ -123,7 +125,12 @@ def create_app(
         async def cleanup_uploads() -> None:
             while True:
                 await asyncio.sleep(runtime_settings.upload_cleanup_interval_seconds)
-                await asyncio.to_thread(upload_service.cleanup_expired)
+                try:
+                    await asyncio.to_thread(upload_service.cleanup_expired)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _LOGGER.exception("scheduled upload cleanup failed")
 
         cleanup_task = asyncio.create_task(cleanup_uploads())
         try:
