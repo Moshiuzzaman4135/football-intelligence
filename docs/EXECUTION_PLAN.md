@@ -128,4 +128,4 @@
 - [x] Run full tests, Ruff, Docker build, API/UI health, deterministic CLI/live demo, real-video model run, and ffprobe checks from fresh commands.
 - [x] Reconcile all 20 acceptance criteria and record gaps as limitations rather than silently weakening them.
 - [x] Inspect `git diff --check`, `git status`, and recent commits; perform final independent code review.
-- [ ] Create the GitHub repository if absent, push only this repository's `main` branch, verify remote/commit, and record URL.
+- [x] Create the public GitHub repository, push only this repository's `main` branch, verify remote/commit, and record URL.

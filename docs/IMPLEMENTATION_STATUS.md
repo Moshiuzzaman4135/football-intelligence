@@ -6,7 +6,7 @@ The mandatory M0-M8 vertical slice is implemented and has run both through the C
 
 ## CURRENT MILESTONE
 
-M16 final demo validation, documentation, Git checkpoint, and publication. M9-M15 remain optional showcase upgrades and are not allowed to destabilize the verified slice.
+M16 mandatory vertical-slice validation and publication is complete. M9-M15 remain optional showcase upgrades and must not destabilize this checkpoint.
 
 ## COMPLETED MILESTONES
 
@@ -22,7 +22,7 @@ M16 final demo validation, documentation, Git checkpoint, and publication. M9-M1
 
 ## CURRENT WORK
 
-Run the fresh final suite and smoke checks, reconcile the independent-review fixes in the documentation, commit the coherent vertical slice, create the GitHub repository, and push `main`.
+None. The verified vertical slice is published at `https://github.com/Moshiuzzaman4135/football-intelligence`.
 
 ## LAST SUCCESSFUL COMMAND
 
@@ -30,7 +30,7 @@ Final rebuilt-image live job `eef77882-63ab-40a1-bed7-f657ca98461b` completed 30
 
 ## NEXT EXACT ACTION
 
-Stage only this repository's verified worktree, commit the vertical slice, create the GitHub repository, push `main`, verify the remote SHA, and record the published URL.
+For optional M9 work, begin with `git status`, reread this harness, and add test-first dominant-jersey color clustering behind a `TeamClassifier` interface. Preserve the published M0-M8 demo behavior.
 
 ## FILES MODIFIED
 
@@ -78,3 +78,7 @@ The core image defaults to a synthetic/degraded color detector. YOLO is optional
 ## BLOCKERS
 
 None for the mandatory vertical slice. The final independent targeted review reports no Critical or Important issues and a `Ready to merge: Yes` verdict.
+
+## PUBLICATION
+
+Public repository: `https://github.com/Moshiuzzaman4135/football-intelligence`. Initial complete vertical-slice publication commit: `a9410af3056b2365a25746512b3665a40db80b45` on `main`.
