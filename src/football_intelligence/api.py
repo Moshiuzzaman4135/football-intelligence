@@ -3,25 +3,69 @@
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from threading import BoundedSemaphore
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile, status
+from fastapi import FastAPI, File, Header, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from football_intelligence.bus import EventBus
 from football_intelligence.detection.factory import build_detector
 from football_intelligence.domain import JobRecord, JobStatus
+from football_intelligence.object_store import (
+    FilesystemObjectStore,
+    S3ObjectStore,
+    UploadedPart,
+)
 from football_intelligence.persistence import JobStore
 from football_intelligence.pipeline import Pipeline
 from football_intelligence.settings import Settings
 from football_intelligence.storage import InvalidJobTransition, JobNotFound, JobRepository
 from football_intelligence.tracking.iou import IoUTracker
+from football_intelligence.uploads import (
+    CompletedPart,
+    MultipartUpload,
+    MultipartUploadService,
+    PresignedPart,
+    UploadConflict,
+    UploadExpired,
+    UploadForbidden,
+    UploadNotFound,
+)
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+
+
+class CreateMultipartUploadRequest(BaseModel):
+    filename: str = Field(min_length=1)
+    size_bytes: int = Field(gt=0)
+    checksum_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CompleteMultipartUploadRequest(BaseModel):
+    parts: list[CompletedPart] = Field(min_length=1)
+
+
+class MultipartUploadResponse(BaseModel):
+    id: str
+    original_filename: str
+    object_key: str
+    size_bytes: int
+    part_size_bytes: int
+    checksum_sha256: str
+    expires_at: datetime
+    status: str
+    job_id: str | None
+    uploaded_parts: list[UploadedPart]
+
+
+def _public_upload(upload: MultipartUpload) -> MultipartUploadResponse:
+    return MultipartUploadResponse.model_validate(upload, from_attributes=True)
 
 
 def create_app(
@@ -31,6 +75,7 @@ def create_app(
     pipeline_factory: Callable[[], Any] | None = None,
     settings: Settings | None = None,
     max_pending_jobs: int = 4,
+    upload_service: MultipartUploadService | None = None,
 ) -> FastAPI:
     root = Path(data_root)
     upload_dir = root / "uploads"
@@ -41,6 +86,24 @@ def create_app(
     admission = BoundedSemaphore(max_pending_jobs)
     bus = EventBus()
     runtime_settings = settings or Settings()
+    if upload_service is None:
+        if runtime_settings.object_store_backend == "s3":
+            object_store = S3ObjectStore(
+                bucket=runtime_settings.s3_bucket,
+                endpoint_url=runtime_settings.s3_endpoint_url,
+                presign_endpoint_url=(
+                    runtime_settings.s3_public_endpoint_url or None
+                ),
+                access_key=runtime_settings.s3_access_key,
+                secret_key=runtime_settings.s3_secret_key.get_secret_value(),
+                region=runtime_settings.s3_region,
+            )
+            object_store.ensure_bucket()
+        else:
+            object_store = FilesystemObjectStore(root / "object-store")
+        upload_service = MultipartUploadService(
+            object_store=object_store, job_store=repository
+        )
 
     if pipeline_factory is None:
 
@@ -71,6 +134,7 @@ def create_app(
     application.state.repository = repository
     application.state.bus = bus
     application.state.executor = executor
+    application.state.upload_service = upload_service
 
     def get_job(job_id: str) -> JobRecord:
         try:
@@ -103,6 +167,89 @@ def create_app(
         job = repository.create(str(destination), safe_name)
         bus.publish("job.created", {"job_id": job.id, "source_path": str(destination)})
         return job
+
+    def multipart_error(error: Exception) -> HTTPException:
+        if isinstance(error, UploadForbidden):
+            return HTTPException(status_code=403, detail=str(error))
+        if isinstance(error, UploadNotFound):
+            return HTTPException(status_code=404, detail="upload not found")
+        if isinstance(error, UploadExpired):
+            return HTTPException(status_code=410, detail=str(error))
+        if isinstance(error, UploadConflict):
+            return HTTPException(status_code=409, detail=str(error))
+        return HTTPException(status_code=422, detail=str(error))
+
+    @application.post(
+        "/uploads", response_model=MultipartUploadResponse, status_code=201
+    )
+    def create_multipart_upload(
+        request: CreateMultipartUploadRequest,
+        owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
+    ) -> MultipartUploadResponse:
+        try:
+            upload = upload_service.create_upload(
+                owner_id=owner_id,
+                filename=request.filename,
+                size_bytes=request.size_bytes,
+                checksum_sha256=request.checksum_sha256,
+            )
+        except ValueError as error:
+            raise multipart_error(error) from error
+        return _public_upload(upload)
+
+    @application.post(
+        "/uploads/{upload_id}/parts/{part_number}/presign",
+        response_model=PresignedPart,
+    )
+    def presign_multipart_part(
+        upload_id: str,
+        part_number: int,
+        owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
+    ) -> PresignedPart:
+        try:
+            return upload_service.presign_part(upload_id, owner_id, part_number)
+        except (
+            ValueError,
+            UploadNotFound,
+            UploadForbidden,
+            UploadExpired,
+            UploadConflict,
+        ) as error:
+            raise multipart_error(error) from error
+
+    @application.get("/uploads/{upload_id}", response_model=MultipartUploadResponse)
+    def read_multipart_upload(
+        upload_id: str,
+        owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
+    ) -> MultipartUploadResponse:
+        try:
+            return _public_upload(upload_service.get_upload(upload_id, owner_id))
+        except (UploadNotFound, UploadForbidden, UploadExpired, UploadConflict) as error:
+            raise multipart_error(error) from error
+
+    @application.post(
+        "/uploads/{upload_id}/complete", response_model=JobRecord, status_code=201
+    )
+    def complete_multipart_upload(
+        upload_id: str,
+        request: CompleteMultipartUploadRequest,
+        owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
+    ) -> JobRecord:
+        try:
+            return upload_service.complete_upload(upload_id, owner_id, request.parts)
+        except (UploadNotFound, UploadForbidden, UploadExpired, UploadConflict) as error:
+            raise multipart_error(error) from error
+
+    @application.delete("/uploads/{upload_id}", status_code=204)
+    def abort_multipart_upload(
+        upload_id: str,
+        owner_id: Annotated[str, Header(alias="X-Owner-ID", min_length=1)],
+    ) -> Response:
+        try:
+            upload_service.abort_upload(upload_id, owner_id)
+        except (UploadNotFound, UploadForbidden, UploadExpired, UploadConflict) as error:
+            raise multipart_error(error) from error
+        return Response(status_code=204)
 
     @application.post("/jobs/{job_id}/start", status_code=202)
     def start_job(job_id: str, response: Response) -> dict[str, str]:

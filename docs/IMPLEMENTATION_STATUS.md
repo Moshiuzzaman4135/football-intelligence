@@ -2,11 +2,11 @@
 
 ## LAST VERIFIED STATE
 
-The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Tasks 1-2 now provide normalized domain/chunk contracts plus durable SQLAlchemy job/stage stores, atomic lease-aware compare-and-set versions, a default three-attempt cap, delivery-bound idempotent completion, monotonic checkpoints, reversible Alembic migrations requiring `FOOTBALL_DATABASE_URL`, and a read-only/repeatable importer for the original SQLite repository. The importer copies events and track summaries but deliberately skips raw observations for later external artifact migration. Completion identity is delivered by follow-on revision `20260818_02`, preserving already-stamped `20260818_01` databases. The protected suite is now 111 passing tests.
+The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Tasks 1-2 provide normalized domain/chunk contracts plus durable SQLAlchemy job/stage stores, atomic lease-aware compare-and-set versions, a default three-attempt cap, delivery-bound idempotent completion, monotonic checkpoints, reversible Alembic migrations requiring `FOOTBALL_DATABASE_URL`, and a read-only/repeatable importer for the original SQLite repository. Task 3 adds direct-to-object-store resumable multipart upload with 16 MiB parts, a 12 GiB cap, opaque keys, owner/expiry enforcement, ETag and streamed SHA-256 validation, delayed job creation, local adapters, and a real S3/MinIO adapter. The protected suite is now 122 passing tests plus one opt-in MinIO integration test.
 
 ## CURRENT MILESTONE
 
-Full-match production expansion Task 2 is complete: durable stage state, SQLAlchemy repositories, legacy import, and the initial production migration. The published M0-M8 vertical slice remains the protected regression baseline.
+Full-match production expansion Task 3 is complete: object storage and resumable multipart upload. The published M0-M8 vertical slice remains the protected regression baseline.
 
 ## COMPLETED MILESTONES
 
@@ -21,6 +21,7 @@ Full-match production expansion Task 2 is complete: durable stage state, SQLAlch
 - M8 Streamlit upload, progress, annotated player, metrics, and evidence timeline.
 - Full-match Task 1 normalized domain contracts and deterministic chunk planning.
 - Full-match Task 2 durable SQLAlchemy job/stage persistence, compare-and-set lifecycle operations, Alembic schema, protocol migration, and read-only legacy SQLite import.
+- Full-match Task 3 multipart upload service and API, in-memory/filesystem/S3 adapters, and MinIO Compose runtime.
 
 ## CURRENT WORK
 
@@ -28,15 +29,15 @@ Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch
 
 ## LAST SUCCESSFUL COMMAND
 
-`docker compose run --rm --no-deps -v "$PWD:/app" backend pytest -q` completed with 111 passed in 3.02 seconds and one known non-failing Starlette `TestClient` deprecation warning.
+`docker compose run --rm --no-deps -v "$PWD:/app" -e FOOTBALL_OBJECT_STORE_BACKEND=filesystem backend pytest -q` completed with 122 passed, one opt-in integration test skipped, and one known non-failing Starlette `TestClient` deprecation warning.
 
 ## NEXT EXACT ACTION
 
-Begin Task 3 by writing failing tests for 16 MiB multipart validation, quota/ownership/checksum enforcement, resume listing, expiry, abort cleanup, and job creation only after successful upload completion.
+Begin Task 4 by writing failing orchestration tests for idempotent Celery delivery, proxy generation, restartable chunks, lease recovery, and cancellation.
 
 ## FILES MODIFIED
 
-Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Task 1 added full-match domain contracts, an explicit stage transition helper, a deterministic chunk planner, and focused contract/planning tests. Task 2 added focused persistence protocols/models/repositories/stage operations, Alembic configuration and initial migration, safe concurrent legacy import with raw-observation skip accounting, PostgreSQL runtime dependencies, and migration/concurrency/import tests while retaining `storage.py` unchanged.
+Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Tasks 1-2 added full-match contracts, chunk planning, SQLAlchemy repositories/stage operations, migrations, and legacy import. Task 3 added focused object-store and upload modules, metadata-only multipart API routes, Boto3 S3 support, MinIO configuration, and upload service/API/adapter/integration tests while retaining the legacy short-clip upload path.
 
 ## MODELS INSTALLED
 
@@ -66,6 +67,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 - Fresh non-root Docker backend/UI healthy at `127.0.0.1:8010`/`127.0.0.1:8510`; ports are loopback-only; upload/start completed, events/summaries returned, artifact endpoint HTTP 200.
 - Final rebuilt-image artifact FFprobe: H.264, 640x360, 10 FPS, 300 frames, 30.000 seconds.
 - Full-match Task 1 review fixes focused contracts/chunks: 25 passed in 0.13 seconds; complete suite: 89 passed in 2.16 seconds with the known non-failing Starlette `TestClient` deprecation warning; Ruff and `git diff --check` clean.
+- Full-match Task 3 focused settings/upload suite: 12 passed; live MinIO multipart integration: 1 passed; complete suite: 122 passed and one opt-in integration test skipped.
 
 ## KNOWN FAILURES
 
@@ -76,7 +78,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 
 ## KNOWN LIMITATIONS
 
-The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; retention/pagination is future work. Team classification, RTSP ingestion, pitch calibration/radar, OCR/audio/VLM evidence, action spotting, and model-based event fusion are not implemented. The UI uses manual refresh rather than WebSockets. The loopback demo has no authentication; nonlocal exposure is unsupported. No lockfile or remote heavy-model benchmark exists yet.
+The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; retention/pagination is future work. Team classification, RTSP ingestion, pitch calibration/radar, OCR/audio/VLM evidence, action spotting, and model-based event fusion are not implemented. Multipart session coordination is process-local in Task 3; object parts survive in MinIO, but API restart recovery requires a durable upload-session repository in a later hardening task. Authentication arrives in Task 9, so `X-Owner-ID` is only the current ownership seam and nonlocal exposure remains unsupported. No lockfile or remote heavy-model benchmark exists yet.
 
 ## BLOCKERS
 

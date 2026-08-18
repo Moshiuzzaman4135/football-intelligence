@@ -73,3 +73,11 @@ Fresh image checks:
 - Barrier-based tests prove that a stop before worker entry and a stop at finalization both end as `stopped`, never `failed`.
 - Final rebuilt-image live job `eef77882-63ab-40a1-bed7-f657ca98461b`: completed/100%, 300 frames, zero errors, 2.0998 seconds, one event, four summaries, artifact HTTP 200.
 - Final targeted independent review: no remaining Critical or Important issues; `Ready to merge: Yes`.
+
+## Full-match multipart upload — 2026-08-18
+
+- RED evidence: the first service suite failed collection because `football_intelligence.object_store` did not exist; API tests then failed because `create_app` had no upload-service seam; adapter tests failed because `S3ObjectStore` did not exist; settings tests failed because S3 fields were absent.
+- Focused unit/API/settings coverage: 12 passed. It covers the 16 MiB constant and final-part sizing, 12 GiB cap, MP4/MKV/MOV allowlist, opaque keys, ownership, resume listing, expiry, abort cleanup, ETag mismatch, streamed full-object checksum/size mismatch, retry after a transient job-store failure, and job creation only after validation.
+- Real MinIO integration: 1 passed using a 16 MiB first part plus tail, presigned PUTs, resumed S3 part listing, ETag completion, streamed SHA-256 validation, object existence, job creation, and cleanup.
+- The rebuilt backend and pinned MinIO were healthy in Compose. Because the existing baseline container already owned loopback port 8010, the isolated worktree backend was verified on 18010; live create/presign/abort returned a host-visible MinIO URL and cleaned up successfully.
+- Complete protected suite: 122 passed, one opt-in MinIO test skipped by default, and the known non-failing Starlette `TestClient` deprecation warning.

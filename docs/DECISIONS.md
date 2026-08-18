@@ -59,3 +59,7 @@ Backend/UI ports bind to `127.0.0.1` by default and both containers run as a non
 ## 2026-08-18: cancellation wins lifecycle races
 
 Finalization is one SQLite transaction that either completes a still-running job or stops a job whose cancellation arrived first. A reserved worker entering after a stop request transitions directly to stopped, and background initialization errors do not turn a concurrent cancellation into failure. Barrier-based tests cover both cancellation windows.
+
+## 2026-08-18: direct multipart transfer with validation before job creation
+
+Full-match media uses opaque S3 keys and 16 MiB multipart parts. FastAPI returns presigned URLs and part/status metadata but never proxies part bodies. Completion requires exact returned ETags, expected part sizes, the declared total size, and a streamed full-object SHA-256 before a job can exist. Compose uses separate internal and browser-visible MinIO endpoints so presigned URLs work from the host without routing storage traffic through the API. The original short-clip filesystem endpoint remains unchanged until the web migration is complete.

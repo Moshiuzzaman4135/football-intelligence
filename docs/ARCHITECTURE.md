@@ -25,6 +25,8 @@ Upload/local/RTSP -> source probe/frame iterator
 - `overlay.py`: labels, confidence, team, event banners, timestamps, and trajectory trails.
 - `pipeline.py`: orchestration, progress, stop checks, per-frame fault budget, metrics, and artifact completion.
 - `api.py`: REST lifecycle/media endpoints and background execution.
+- `object_store.py`: streaming multipart protocol with in-memory, filesystem, and S3/MinIO adapters.
+- `uploads.py`: upload quota, ownership, expiry, part, checksum, completion, and delayed job-creation rules.
 - `ui.py`: upload/start/progress/video/timeline/evidence showcase.
 
 ## Normalized contracts
@@ -41,4 +43,4 @@ Invalid/unreadable sources and premature decode EOF fail visibly. Isolated infer
 
 ## Deployment
 
-Docker Compose provides reproducible non-root CPU backend/UI containers, loopback-only host ports, and a shared media volume. Native CUDA may be used when a compatible Python/PyTorch stack is verified. Redis/Celery, PostgreSQL, authentication for nonlocal deployment, and a remote inference API are deferred until the single-node workload or optional heavy model justifies them.
+Docker Compose provides reproducible non-root CPU backend/UI containers plus pinned MinIO on loopback-only host ports. Full-match clients request metadata-only upload sessions and transfer 16 MiB parts directly to presigned MinIO URLs; FastAPI streams the completed object to validate its declared SHA-256 before creating a job. The internal MinIO service endpoint and host-visible presign endpoint are separate settings. The legacy short-clip filesystem upload remains available during migration. Native CUDA may be used when a compatible Python/PyTorch stack is verified. Redis/Celery, authentication for nonlocal deployment, and a remote inference API remain later production tasks.
