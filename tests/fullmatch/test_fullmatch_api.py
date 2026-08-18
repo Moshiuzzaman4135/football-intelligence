@@ -1,3 +1,5 @@
+import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
 
@@ -5,8 +7,15 @@ from fastapi.testclient import TestClient
 
 from football_intelligence.api import create_app
 from football_intelligence.domain import JobStatus
-from football_intelligence.fullmatch.manifest import FullMatchManifest, RunnerOptions
+from football_intelligence.fullmatch.manifest import (
+    FinalArtifact,
+    FullMatchManifest,
+    ManifestStore,
+    RunnerOptions,
+)
 from football_intelligence.fullmatch.media import MediaProbe
+from football_intelligence.fullmatch.runner import FullMatchRunner
+from football_intelligence.object_store import InMemoryObjectStore
 from football_intelligence.storage import InvalidJobTransition, JobRepository
 
 
@@ -114,6 +123,7 @@ def test_full_match_read_apis_and_annotated_video_range(tmp_path: Path):
     assert video.content == b"2345"
     assert replay.status_code == 200
     assert replay.json()["status"] == "completed"
+    assert runner.calls == [job.id]
 
 
 def test_running_job_is_resubmitted_after_api_process_restart(tmp_path: Path):
@@ -134,6 +144,79 @@ def test_running_job_is_resubmitted_after_api_process_restart(tmp_path: Path):
     assert resumed.status_code == 202
     assert resumed.json()["status"] == "running"
     assert runner.calls == [job.id]
+
+
+def test_completed_api_replay_promotes_precommitted_crash_artifact(
+    tmp_path: Path,
+):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id("one", "s3://bucket/one.mp4", "one.mp4")
+    workspace = tmp_path / "fullmatch" / job.id
+    workspace.mkdir(parents=True)
+    proxy = workspace / "proxy.mp4"
+    output = workspace / "annotated.mp4"
+    heat_map = workspace / "heat-map.png"
+    proxy.write_bytes(b"proxy")
+    output.write_bytes(b"precommitted output")
+    heat_map.write_bytes(b"precommitted heat map")
+    probe = MediaProbe(
+        path=str(proxy),
+        container="mov,mp4",
+        video_codec="h264",
+        width=320,
+        height=180,
+        fps=25,
+        frame_count=25,
+        duration_ms=1_000,
+        has_audio=False,
+    )
+    manifest = FullMatchManifest.create(
+        job_id=job.id,
+        source_uri=job.source_path,
+        options=RunnerOptions(),
+        source=probe.model_copy(update={"path": str(workspace / "source.mp4")}),
+        proxy=probe,
+    )
+    manifest.prepared_final_artifact = FinalArtifact(
+        path=str(output),
+        sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+        heat_map_path=str(heat_map),
+        heat_map_sha256=hashlib.sha256(heat_map.read_bytes()).hexdigest(),
+        completed_at=datetime.now(UTC),
+    )
+    ManifestStore(workspace / "manifest.json").save(manifest)
+    repository.transition(job.id, JobStatus.RUNNING)
+    repository.complete_or_stop(job.id, output_path=str(output), metrics={})
+
+    class RecoveryRunner(FullMatchRunner):
+        def _probe_final(self, output):
+            del output
+            return None
+
+        def _media_checkpoint_is_durable(self, checkpoint, expected_sha256):
+            del checkpoint, expected_sha256
+            return True
+
+    runner = RecoveryRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="bucket",
+        data_root=tmp_path,
+    )
+    app = create_app(
+        repository=repository,
+        data_root=tmp_path,
+        pipeline_factory=lambda: None,
+        full_match_runner_factory=lambda: runner,
+    )
+
+    with TestClient(app) as client:
+        replay = client.post(f"/jobs/{job.id}/full-match/run")
+
+    assert replay.status_code == 200
+    recovered = ManifestStore(workspace / "manifest.json").load()
+    assert recovered.prepared_final_artifact is None
+    assert recovered.final_artifact == manifest.prepared_final_artifact
 
 
 def test_full_match_start_stop_cas_race_maps_to_conflict_and_releases_slot(

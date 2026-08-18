@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from collections import deque
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Protocol
 
 import cv2
@@ -58,18 +60,40 @@ class TesseractCliOcrEngine:
 
     def __init__(
         self,
-        tessdata_dir: str,
+        tessdata_dir: str | Path,
         language: str = "eng",
         *,
-        version: str = "5.5.0",
-        model_sha256: str = "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+        executable: str = "tesseract",
     ) -> None:
-        self._tessdata_dir = tessdata_dir
+        self._tessdata_dir = str(tessdata_dir)
         self._language = language
+        self._executable = executable
         self.model_name = language
-        self.version = version
-        self.model_sha256 = model_sha256
+        self.version = self._measure_version()
+        self.model_sha256 = self._hash_model(Path(tessdata_dir) / f"{language}.traineddata")
         self.producer = "ocr.tesseract"
+
+    def _measure_version(self) -> str:
+        result = subprocess.run(
+            [self._executable, "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        first_line = (result.stdout or result.stderr).splitlines()[0]
+        match = re.search(r"(?:tesseract\s+)?(?P<version>\d+(?:\.\d+)+)", first_line)
+        if match is None:
+            raise RuntimeError("could not measure Tesseract version")
+        return match.group("version")
+
+    @staticmethod
+    def _hash_model(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def read(self, frame: np.ndarray | None, region: ScoreboardRegion) -> OcrResult:
         if frame is None:
@@ -85,7 +109,7 @@ class TesseractCliOcrEngine:
             return OcrResult(text="", confidence=0)
         result = subprocess.run(
             [
-                "tesseract",
+                self._executable,
                 "stdin",
                 "stdout",
                 "--tessdata-dir",

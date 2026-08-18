@@ -34,6 +34,7 @@ class MediaProbe(BaseModel):
     height: int = Field(gt=0)
     fps: float = Field(gt=0)
     frame_count: int = Field(gt=0)
+    frame_count_estimated: bool = False
     duration_ms: int = Field(gt=0)
     has_audio: bool
     pixel_format: str = ""
@@ -87,23 +88,22 @@ def localize_s3_source(
     return final_path
 
 
-def probe_media(path: str | Path) -> MediaProbe:
+def probe_media(
+    path: str | Path, *, cancelled: Callable[[], bool] | None = None
+) -> MediaProbe:
     source = Path(path)
-    result = subprocess.run(
+    result = run_media_command(
         [
             "ffprobe",
             "-v",
             "error",
             "-show_streams",
             "-show_format",
-            "-count_frames",
             "-of",
             "json",
             str(source),
         ],
-        check=True,
-        capture_output=True,
-        text=True,
+        cancelled=cancelled,
     )
     payload = json.loads(result.stdout)
     return _media_probe_from_payload(source, payload)
@@ -125,9 +125,10 @@ def _media_probe_from_payload(source: Path, payload: dict[str, object]) -> Media
     fps = _parse_rate(video.get("avg_frame_rate")) or _parse_rate(
         video.get("r_frame_rate")
     )
-    frame_count = _parse_positive_int(video.get("nb_read_frames")) or _parse_positive_int(
-        video.get("nb_frames")
-    )
+    reported_frame_count = _parse_positive_int(
+        video.get("nb_read_frames")
+    ) or _parse_positive_int(video.get("nb_frames"))
+    frame_count = reported_frame_count
     duration = _parse_positive_float(video.get("duration")) or _parse_positive_float(
         format_payload.get("duration")
     )
@@ -150,6 +151,7 @@ def _media_probe_from_payload(source: Path, payload: dict[str, object]) -> Media
         height=int(video.get("height", 0)),
         fps=fps,
         frame_count=frame_count,
+        frame_count_estimated=reported_frame_count == 0,
         duration_ms=max(1, round(duration * 1000)),
         has_audio=audio is not None,
         pixel_format=str(video.get("pix_fmt", "")),
@@ -190,7 +192,7 @@ def build_proxy(
 ) -> Path:
     source_path = Path(source)
     destination_path = Path(destination)
-    original = probe_media(source_path)
+    original = probe_media(source_path, cancelled=cancelled)
     validate_source_media(original)
     width, height = _bounded_geometry(original.width, original.height)
     target_fps = min(25.0, original.fps)
@@ -226,7 +228,7 @@ def build_proxy(
             ],
             cancelled=cancelled,
         )
-        actual = probe_media(temporary)
+        actual = probe_media(temporary, cancelled=cancelled)
         _validate_proxy(actual, original, width, height, target_fps)
         temporary.replace(destination_path)
         _fsync_directory(destination_path.parent)
@@ -357,6 +359,27 @@ def run_media_command(
             process.returncode, command, output=stdout, stderr=stderr
         )
     return completed
+
+
+def validate_full_decode(
+    path: str | Path, *, cancelled: Callable[[], bool] | None = None
+) -> None:
+    completed = run_media_command(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-xerror",
+            "-i",
+            str(path),
+            "-f",
+            "null",
+            "-",
+        ],
+        cancelled=cancelled,
+    )
+    if completed.stderr.strip():
+        raise RuntimeError(f"full decode diagnostics: {completed.stderr.strip()}")
 
 
 def _fsync_directory(path: Path) -> None:

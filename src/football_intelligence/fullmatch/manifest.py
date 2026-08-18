@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -22,12 +23,16 @@ class RuntimeProvenance(BaseModel, frozen=True):
     detector_framework: str
     detector_version: str
     detector_config: dict[str, str] = Field(default_factory=dict)
+    detector_model_sha256: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    detector_adapter_sha256: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
     tracker: str
     tracker_config: dict[str, str]
+    tracker_adapter_sha256: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
     ocr_engine: str
     ocr_model: str
     ocr_version: str
     ocr_model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ocr_adapter_sha256: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
 
 
 class RunnerOptions(BaseModel, frozen=True):
@@ -103,7 +108,7 @@ class FinalArtifact(BaseModel):
 
 
 class FullMatchManifest(BaseModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     job_id: str = Field(min_length=1)
     source_uri: str = Field(min_length=1)
     options: RunnerOptions
@@ -112,6 +117,7 @@ class FullMatchManifest(BaseModel):
     proxy: MediaProbe
     proxy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     chunks: list[ChunkRecord]
+    prepared_final_artifact: FinalArtifact | None = None
     final_artifact: FinalArtifact | None = None
     peak_observations: int = Field(default=0, ge=0)
     created_at: datetime
@@ -172,7 +178,13 @@ class ManifestStore:
         return self.path.is_file()
 
     def load(self) -> FullMatchManifest:
-        return FullMatchManifest.model_validate_json(self.path.read_text(encoding="utf-8"))
+        return FullMatchManifest.model_validate(self.load_payload())
+
+    def load_payload(self) -> dict[str, object]:
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("manifest root must be an object")
+        return payload
 
     def save(self, manifest: FullMatchManifest) -> None:
         updated = manifest.model_copy(update={"updated_at": datetime.now(UTC)})

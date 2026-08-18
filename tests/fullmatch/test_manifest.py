@@ -43,6 +43,8 @@ def test_manifest_plans_120_second_chunks_with_five_second_context(tmp_path: Pat
         (235_000, 250_000),
     ]
     assert manifest.progress == 0
+    assert manifest.schema_version == 2
+    assert manifest.prepared_final_artifact is None
 
 
 def test_manifest_store_replaces_atomically_and_ignores_uncommitted_partial(

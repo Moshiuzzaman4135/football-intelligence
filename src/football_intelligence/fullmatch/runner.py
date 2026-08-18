@@ -42,6 +42,9 @@ from football_intelligence.fullmatch.media import (
     sha256_file,
     validate_source_media,
 )
+from football_intelligence.fullmatch.media import (
+    validate_full_decode as validate_media_decode,
+)
 from football_intelligence.fullmatch.ocr import (
     ConsensusState,
     FakeOcrEngine,
@@ -49,6 +52,7 @@ from football_intelligence.fullmatch.ocr import (
     ScoreboardConsensus,
     ScoreboardParser,
 )
+from football_intelligence.fullmatch.provenance import measure_runtime_provenance
 from football_intelligence.object_store import ObjectStore
 from football_intelligence.overlay import draw_overlay
 from football_intelligence.persistence import JobStore
@@ -147,18 +151,8 @@ class FullMatchRunner:
         self.detector_factory = detector_factory
         self.tracker_factory = tracker_factory
         self.ocr_engine = ocr_engine or FakeOcrEngine([])
-        runtime_provenance = provenance or RuntimeProvenance(
-            detector=self._callable_name(detector_factory),
-            detector_model="runtime-injected",
-            detector_device="runtime-injected",
-            detector_framework="runtime-injected",
-            detector_version="runtime-injected",
-            tracker=self._callable_name(tracker_factory),
-            tracker_config={},
-            ocr_engine=f"{type(self.ocr_engine).__module__}.{type(self.ocr_engine).__qualname__}",
-            ocr_model=getattr(self.ocr_engine, "model_name", "runtime-injected"),
-            ocr_version=getattr(self.ocr_engine, "version", "runtime-injected"),
-            ocr_model_sha256=getattr(self.ocr_engine, "model_sha256", "0" * 64),
+        runtime_provenance = provenance or measure_runtime_provenance(
+            detector_factory(), tracker_factory(), self.ocr_engine
         )
         base_options = options or RunnerOptions()
         effective_max_frame_errors = (
@@ -216,7 +210,7 @@ class FullMatchRunner:
         workspace.mkdir(parents=True, exist_ok=True)
         store = ManifestStore(workspace / "manifest.json")
         if store.exists():
-            manifest = store.load()
+            manifest = self._load_manifest(job, store)
             if manifest.job_id != job.id or manifest.source_uri != job.source_path:
                 raise RuntimeError("manifest identity does not match the job")
             if manifest.options != self.options:
@@ -224,31 +218,46 @@ class FullMatchRunner:
             if not self._media_checkpoint_is_durable(
                 manifest.proxy, manifest.proxy_sha256
             ):
-                source, proxy = self._prepare_media(job, workspace, rebuild_proxy=True)
-                if sha256_file(source.path) != manifest.source_sha256:
-                    raise RuntimeError("localized source identity changed")
-                self._validate_probe_identity(source, manifest.source)
-                manifest.proxy = proxy
-                manifest.proxy_sha256 = sha256_file(proxy.path)
-                self._invalidate_chunks_from(manifest, 0)
-                manifest.final_artifact = None
-                store.save(manifest)
-                delete_file_durable(source.path)
+                source = None
+                try:
+                    source, proxy = self._prepare_media(
+                        job, workspace, rebuild_proxy=True
+                    )
+                    if sha256_file(source.path) != manifest.source_sha256:
+                        raise RuntimeError("localized source identity changed")
+                    self._validate_probe_identity(source, manifest.source)
+                    manifest.proxy = proxy
+                    manifest.proxy_sha256 = sha256_file(proxy.path)
+                    self._invalidate_chunks_from(manifest, 0)
+                    manifest.prepared_final_artifact = None
+                    manifest.final_artifact = None
+                    store.save(manifest)
+                finally:
+                    if source is not None:
+                        self._delete_localized_source(source.path, workspace)
+            else:
+                self._cleanup_manifest_source(manifest, workspace)
         else:
-            source, proxy = self._prepare_media(job, workspace)
-            self._raise_if_stopping(job_id)
-            manifest = FullMatchManifest.create(
-                job_id=job.id,
-                source_uri=job.source_path,
-                options=self.options,
-                source=source,
-                proxy=proxy,
-                source_sha256=sha256_file(source.path),
-                proxy_sha256=sha256_file(proxy.path),
-            )
-            store.save(manifest)
-            self.repository.save_job_metadata(job_id, source=self._video_metadata(source))
-            delete_file_durable(source.path)
+            source = None
+            try:
+                source, proxy = self._prepare_media(job, workspace)
+                self._raise_if_stopping(job_id)
+                manifest = FullMatchManifest.create(
+                    job_id=job.id,
+                    source_uri=job.source_path,
+                    options=self.options,
+                    source=source,
+                    proxy=proxy,
+                    source_sha256=sha256_file(source.path),
+                    proxy_sha256=sha256_file(proxy.path),
+                )
+                store.save(manifest)
+                self.repository.save_job_metadata(
+                    job_id, source=self._video_metadata(source)
+                )
+            finally:
+                if source is not None:
+                    self._delete_localized_source(source.path, workspace)
         repaired_manifest = False
         invalid_from: int | None = next(
             (
@@ -312,26 +321,18 @@ class FullMatchRunner:
                 current_progress = self.repository.get(job_id).progress
                 if manifest.progress > current_progress:
                     self.repository.update_progress(job_id, manifest.progress)
+            if manifest.prepared_final_artifact is not None:
+                self._validate_final_artifact(
+                    manifest, manifest.prepared_final_artifact, job_id
+                )
+                return self._commit_prepared_artifact(manifest, store)
             heat_map = self._aggregate_heat_map(manifest)
             heat_map_path = heat_map.write_png(workspace / "heat-map.png")
             output = self._finalize(
                 manifest=manifest, proxy=proxy_path, workspace=workspace
             )
             output_probe = self._probe_final(output)
-            finalized = self.repository.complete_or_stop(
-                job_id,
-                output_path=str(output),
-                metrics={
-                    "full_match": "mvp",
-                    "chunks": len(manifest.chunks),
-                    "peak_observations": manifest.peak_observations,
-                },
-            )
-            if finalized.status is not JobStatus.COMPLETED:
-                delete_file_durable(output)
-                delete_file_durable(heat_map_path)
-                return finalized
-            manifest.final_artifact = FinalArtifact(
+            manifest.prepared_final_artifact = FinalArtifact(
                 path=str(output),
                 sha256=sha256_file(output),
                 heat_map_path=str(heat_map_path),
@@ -340,12 +341,7 @@ class FullMatchRunner:
                 completed_at=datetime.now(UTC),
             )
             store.save(manifest)
-            self._persist_events(manifest)
-            if output_probe is not None:
-                self.repository.save_job_metadata(
-                    job_id, output=self._video_metadata(output_probe)
-                )
-            return finalized
+            return self._commit_prepared_artifact(manifest, store)
         except Exception as error:
             current = self.repository.get(job_id)
             if current.status is JobStatus.STOPPING:
@@ -354,48 +350,187 @@ class FullMatchRunner:
                 self.repository.transition(job_id, JobStatus.FAILED, error=str(error))
             raise
 
+    def _commit_prepared_artifact(
+        self, manifest: FullMatchManifest, store: ManifestStore
+    ) -> JobRecord:
+        artifact = manifest.prepared_final_artifact
+        if artifact is None:
+            raise RuntimeError("prepared final artifact is missing")
+        finalized = self.repository.complete_or_stop(
+            manifest.job_id,
+            output_path=artifact.path,
+            metrics={
+                "full_match": "mvp",
+                "chunks": len(manifest.chunks),
+                "peak_observations": manifest.peak_observations,
+            },
+        )
+        if finalized.status is not JobStatus.COMPLETED:
+            delete_file_durable(artifact.path)
+            delete_file_durable(artifact.heat_map_path)
+            manifest.prepared_final_artifact = None
+            store.save(manifest)
+            return finalized
+        manifest.final_artifact = artifact
+        manifest.prepared_final_artifact = None
+        store.save(manifest)
+        self._persist_events(manifest)
+        if artifact.probe is not None:
+            self.repository.save_job_metadata(
+                manifest.job_id, output=self._video_metadata(artifact.probe)
+            )
+        return finalized
+
+    def _load_manifest(
+        self, job: JobRecord, store: ManifestStore
+    ) -> FullMatchManifest:
+        payload = store.load_payload()
+        if payload.get("schema_version") != 1:
+            return FullMatchManifest.model_validate(payload)
+        return self._migrate_v1_manifest(job, store, payload)
+
+    def _migrate_v1_manifest(
+        self,
+        job: JobRecord,
+        store: ManifestStore,
+        payload: dict[str, object],
+    ) -> FullMatchManifest:
+        if payload.get("job_id") != job.id or payload.get("source_uri") != job.source_path:
+            raise RuntimeError("manifest identity does not match the job")
+        legacy_options = payload.get("options")
+        if not isinstance(legacy_options, dict):
+            raise ValueError("v1 manifest options are invalid")
+        current_options = self.options.model_dump(mode="json")
+        for key in ("chunk_ms", "overlap_ms", "ocr_interval_ms", "scoreboard_region"):
+            if legacy_options.get(key) != current_options[key]:
+                raise RuntimeError("runner options differ from the v1 manifest")
+        source_expected = MediaProbe.model_validate(payload.get("source"))
+        proxy_expected = MediaProbe.model_validate(payload.get("proxy"))
+        source_path = Path(source_expected.path)
+        proxy_path = Path(proxy_expected.path)
+        source = None
+        try:
+            if source_path.is_file():
+                try:
+                    source = self._verified_v1_probe(source_path, source_expected)
+                except (
+                    OSError,
+                    RuntimeError,
+                    ValueError,
+                    subprocess.SubprocessError,
+                ):
+                    self._delete_localized_source(source_path, store.path.parent)
+            if source is None:
+                source, proxy = self._prepare_media(
+                    job, store.path.parent, rebuild_proxy=True
+                )
+            else:
+                try:
+                    proxy = self._verified_v1_probe(proxy_path, proxy_expected)
+                except (
+                    OSError,
+                    RuntimeError,
+                    ValueError,
+                    subprocess.SubprocessError,
+                ):
+                    source, proxy = self._prepare_media(
+                        job, store.path.parent, rebuild_proxy=True
+                    )
+            self._validate_v1_probe_identity(source, source_expected)
+            self._validate_v1_probe_identity(proxy, proxy_expected)
+            migrated_payload = dict(payload)
+            migrated_payload.update(
+                {
+                    "schema_version": 2,
+                    "options": current_options,
+                    "source": source.model_dump(mode="json"),
+                    "source_sha256": sha256_file(source.path),
+                    "proxy": proxy.model_dump(mode="json"),
+                    "proxy_sha256": sha256_file(proxy.path),
+                    "prepared_final_artifact": None,
+                }
+            )
+            manifest = FullMatchManifest.model_validate(migrated_payload)
+            self._invalidate_chunks_from(manifest, 0)
+            manifest.final_artifact = None
+            store.save(manifest)
+            return manifest
+        finally:
+            if source is not None:
+                self._delete_localized_source(source.path, store.path.parent)
+
     def _prepare_media(
         self, job: JobRecord, workspace: Path, *, rebuild_proxy: bool = False
     ) -> tuple[MediaProbe, MediaProbe]:
-        existing_sources = list(workspace.glob("source.*"))
-        source_path = next(
-            (path for path in existing_sources if path.name != "source.partial"), None
-        )
-        if source_path is None:
-            source_path = localize_s3_source(
-                self.object_store,
-                job.source_path,
-                bucket=self.bucket,
-                destination_dir=workspace,
-                cancelled=lambda: self._is_stopping(job.id),
-            )
-        self._raise_if_stopping(job.id)
+        source_path: Path | None = None
         try:
-            source = probe_media(source_path)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            delete_file_durable(source_path)
-            source_path = localize_s3_source(
-                self.object_store,
-                job.source_path,
-                bucket=self.bucket,
-                destination_dir=workspace,
-                cancelled=lambda: self._is_stopping(job.id),
+            existing_sources = list(workspace.glob("source.*"))
+            source_path = next(
+                (path for path in existing_sources if path.name != "source.partial"),
+                None,
             )
-            source = probe_media(source_path)
-        self._raise_if_stopping(job.id)
-        validate_source_media(source)
-        proxy_path = workspace / "proxy.mp4"
-        if rebuild_proxy and proxy_path.exists():
-            delete_file_durable(proxy_path)
-        if not proxy_path.is_file():
-            build_proxy(
-                source_path,
-                proxy_path,
-                cancelled=lambda: self._is_stopping(job.id),
+            if source_path is None:
+                source_path = localize_s3_source(
+                    self.object_store,
+                    job.source_path,
+                    bucket=self.bucket,
+                    destination_dir=workspace,
+                    cancelled=lambda: self._is_stopping(job.id),
+                )
+            self._raise_if_stopping(job.id)
+            try:
+                source = probe_media(
+                    source_path, cancelled=lambda: self._is_stopping(job.id)
+                )
+            except (OSError, ValueError, subprocess.SubprocessError):
+                delete_file_durable(source_path)
+                source_path = localize_s3_source(
+                    self.object_store,
+                    job.source_path,
+                    bucket=self.bucket,
+                    destination_dir=workspace,
+                    cancelled=lambda: self._is_stopping(job.id),
+                )
+                source = probe_media(
+                    source_path, cancelled=lambda: self._is_stopping(job.id)
+                )
+            self._raise_if_stopping(job.id)
+            validate_source_media(source)
+            proxy_path = workspace / "proxy.mp4"
+            if rebuild_proxy and proxy_path.exists():
+                delete_file_durable(proxy_path)
+            if not proxy_path.is_file():
+                build_proxy(
+                    source_path,
+                    proxy_path,
+                    cancelled=lambda: self._is_stopping(job.id),
+                )
+            self._raise_if_stopping(job.id)
+            proxy = probe_media(
+                proxy_path, cancelled=lambda: self._is_stopping(job.id)
             )
-        self._raise_if_stopping(job.id)
-        proxy = probe_media(proxy_path)
-        return source, proxy
+            return source, proxy
+        except BaseException:
+            if source_path is not None:
+                self._delete_localized_source(source_path, workspace)
+            raise
+
+    def _cleanup_manifest_source(
+        self, manifest: FullMatchManifest, workspace: Path
+    ) -> None:
+        source_path = Path(manifest.source.path)
+        if not source_path.is_file():
+            return
+        if sha256_file(source_path) == manifest.source_sha256:
+            self._verified_probe(source_path, manifest.source)
+        self._delete_localized_source(source_path, workspace)
+
+    @staticmethod
+    def _delete_localized_source(path: str | Path, workspace: Path) -> None:
+        target = Path(path).resolve()
+        if target.parent != workspace.resolve() or not target.name.startswith("source."):
+            raise RuntimeError("localized source path escaped the job workspace")
+        delete_file_durable(target)
 
     def _probe_final(self, output: Path) -> MediaProbe | None:
         return probe_media(output)
@@ -410,29 +545,29 @@ class FullMatchRunner:
     def _validate_completed_artifacts(self, job: JobRecord) -> None:
         manifest = self.status(job.id)
         artifact = manifest.final_artifact
-        if artifact is None and job.output_path:
-            output = Path(job.output_path)
-            heat_map = self.workspace_for(job.id) / "heat-map.png"
-            if output.is_file() and heat_map.is_file():
-                probe = self._probe_final(output)
-                if probe is not None:
-                    self._validate_final(probe, manifest.proxy)
-                    self._validate_faststart(output)
-                    self._validate_full_decode(output, job.id)
-                artifact = FinalArtifact(
-                    path=str(output),
-                    sha256=sha256_file(output),
-                    heat_map_path=str(heat_map),
-                    heat_map_sha256=sha256_file(heat_map),
-                    probe=probe,
-                    completed_at=datetime.now(UTC),
-                )
-                manifest.final_artifact = artifact
-                ManifestStore(self.workspace_for(job.id) / "manifest.json").save(
-                    manifest
-                )
+        if artifact is None and manifest.prepared_final_artifact is not None:
+            prepared = manifest.prepared_final_artifact
+            if job.output_path != prepared.path:
+                raise RuntimeError("completed output does not match prepared artifact")
+            self._validate_final_artifact(manifest, prepared, job.id)
+            manifest.final_artifact = prepared
+            manifest.prepared_final_artifact = None
+            ManifestStore(self.workspace_for(job.id) / "manifest.json").save(manifest)
+            artifact = prepared
         if artifact is None or job.output_path != artifact.path:
             raise RuntimeError("completed full-match artifact manifest is missing")
+        self._validate_final_artifact(manifest, artifact, job.id)
+        if not self._media_checkpoint_is_durable(
+            manifest.proxy, manifest.proxy_sha256
+        ):
+            raise RuntimeError("completed full-match proxy artifact integrity check failed")
+
+    def _validate_final_artifact(
+        self,
+        manifest: FullMatchManifest,
+        artifact: FinalArtifact,
+        job_id: str,
+    ) -> None:
         output = Path(artifact.path)
         heat_map = Path(artifact.heat_map_path)
         if (
@@ -442,24 +577,18 @@ class FullMatchRunner:
             or sha256_file(heat_map) != artifact.heat_map_sha256
         ):
             raise RuntimeError("completed full-match artifact integrity check failed")
-        if not self._media_checkpoint_is_durable(
-            manifest.proxy, manifest.proxy_sha256
-        ):
-            raise RuntimeError("completed full-match proxy artifact integrity check failed")
         actual = self._probe_final(output)
-        if artifact.probe is not None and actual is not None:
-            self._validate_probe_identity(actual, artifact.probe)
+        if actual is not None:
+            if artifact.probe is not None:
+                self._validate_probe_identity(actual, artifact.probe)
+            self._validate_final(actual, manifest.proxy)
+            self._validate_faststart(output)
+            self._validate_full_decode(output, job_id)
 
     @staticmethod
     def _validate_probe_identity(actual: MediaProbe, expected: MediaProbe) -> None:
         if actual.model_dump(exclude={"path"}) != expected.model_dump(exclude={"path"}):
             raise RuntimeError("media probe identity changed")
-
-    @staticmethod
-    def _callable_name(value: object) -> str:
-        module = getattr(value, "__module__", type(value).__module__)
-        qualname = getattr(value, "__qualname__", type(value).__qualname__)
-        return f"{module}.{qualname}"
 
     @staticmethod
     def _chunk_is_durable(chunk: ChunkRecord) -> bool:
@@ -475,10 +604,40 @@ class FullMatchRunner:
         if not path.is_file() or sha256_file(path) != expected_sha256:
             return False
         try:
-            self._validate_probe_identity(probe_media(path), checkpoint)
+            self._verified_probe(path, checkpoint)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
             return False
         return True
+
+    def _verified_probe(self, path: Path, expected: MediaProbe) -> MediaProbe:
+        actual = probe_media(path)
+        self._validate_probe_identity(actual, expected)
+        return actual
+
+    def _verified_v1_probe(self, path: Path, expected: MediaProbe) -> MediaProbe:
+        actual = probe_media(path)
+        self._validate_v1_probe_identity(actual, expected)
+        return actual
+
+    @staticmethod
+    def _validate_v1_probe_identity(
+        actual: MediaProbe, expected: MediaProbe
+    ) -> None:
+        legacy_fields = (
+            "container",
+            "video_codec",
+            "width",
+            "height",
+            "fps",
+            "frame_count",
+            "duration_ms",
+            "has_audio",
+        )
+        if any(
+            getattr(actual, field) != getattr(expected, field)
+            for field in legacy_fields
+        ):
+            raise RuntimeError("v1 media probe identity changed")
 
     @staticmethod
     def _invalidate_chunks_from(manifest: FullMatchManifest, start: int) -> None:
@@ -779,8 +938,8 @@ class FullMatchRunner:
             raise RuntimeError("annotated MP4 is not faststart/browser compatible")
 
     def _validate_full_decode(self, path: Path, job_id: str) -> None:
-        run_media_command(
-            ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+        validate_media_decode(
+            path,
             cancelled=lambda: self._is_stopping(job_id),
         )
 

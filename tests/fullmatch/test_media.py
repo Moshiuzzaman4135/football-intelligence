@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import football_intelligence.fullmatch.media as media_module
 from football_intelligence.fullmatch.media import (
     MAX_MATCH_DURATION_MS,
     MediaCancelled,
@@ -13,6 +14,7 @@ from football_intelligence.fullmatch.media import (
     parse_same_bucket_uri,
     probe_media,
     run_media_command,
+    validate_full_decode,
     validate_source_media,
 )
 
@@ -108,6 +110,106 @@ def test_media_command_can_be_cancelled_while_encoder_is_running():
         run_media_command(
             ["python", "-c", "import time; time.sleep(5)"], cancelled=cancelled
         )
+
+
+def test_routine_probe_is_non_exhaustive_and_marks_derived_count(
+    tmp_path: Path, monkeypatch
+):
+    payload = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "h264",
+                "pix_fmt": "yuv420p",
+                "width": 320,
+                "height": 180,
+                "avg_frame_rate": "25/1",
+            }
+        ],
+        "format": {"format_name": "mov,mp4", "duration": "2.0"},
+    }
+    captured: list[str] = []
+
+    def fake_command(command, *, cancelled=None):
+        del cancelled
+        captured.extend(command)
+        return subprocess.CompletedProcess(
+            command, 0, stdout=__import__("json").dumps(payload), stderr=""
+        )
+
+    monkeypatch.setattr(media_module, "run_media_command", fake_command)
+
+    probe = probe_media(tmp_path / "source.mp4")
+
+    assert "-count_frames" not in captured
+    assert probe.frame_count == 50
+    assert probe.frame_count_estimated is True
+
+
+def test_routine_probe_forwards_cancellation_to_process_helper(
+    tmp_path: Path, monkeypatch
+):
+    def cancelled() -> bool:
+        return True
+
+    def cancelled_command(command, *, cancelled=None):
+        del command
+        assert cancelled is not None and cancelled()
+        raise MediaCancelled("probe cancelled")
+
+    monkeypatch.setattr(media_module, "run_media_command", cancelled_command)
+
+    with pytest.raises(MediaCancelled, match="probe cancelled"):
+        probe_media(tmp_path / "source.mp4", cancelled=cancelled)
+
+
+def test_full_decode_uses_xerror_and_rejects_any_error_diagnostics(
+    tmp_path: Path, monkeypatch
+):
+    captured: list[str] = []
+
+    def diagnostic_command(command, *, cancelled=None):
+        assert cancelled is not None and not cancelled()
+        captured.extend(command)
+        return subprocess.CompletedProcess(
+            command, 0, stdout="", stderr="concealing damaged macroblock"
+        )
+
+    monkeypatch.setattr(media_module, "run_media_command", diagnostic_command)
+
+    with pytest.raises(RuntimeError, match="decode diagnostics"):
+        validate_full_decode(tmp_path / "annotated.mp4", cancelled=lambda: False)
+    assert "-xerror" in captured
+
+
+def test_full_decode_rejects_corrupted_real_media(tmp_path: Path):
+    source = tmp_path / "valid.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=25:duration=3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(source),
+        ],
+        check=True,
+    )
+    corrupt = tmp_path / "corrupt.mp4"
+    body = source.read_bytes()
+    corrupt.write_bytes(body[: len(body) // 2])
+
+    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+        validate_full_decode(corrupt)
 
 
 def test_source_validation_rejects_duration_and_unsupported_container():

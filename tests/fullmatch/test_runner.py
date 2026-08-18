@@ -1,8 +1,10 @@
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
+import football_intelligence.fullmatch.runner as runner_module
 from football_intelligence.domain import (
     BoundingBox,
     EventEvidence,
@@ -15,6 +17,7 @@ from football_intelligence.domain import (
 from football_intelligence.fullmatch.heatmap import ScreenSpaceHeatMap
 from football_intelligence.fullmatch.manifest import ChunkRecord, RunnerOptions
 from football_intelligence.fullmatch.media import MediaCancelled, MediaProbe
+from football_intelligence.fullmatch.ocr import TesseractCliOcrEngine
 from football_intelligence.fullmatch.runner import (
     BoundedTrails,
     ChunkResult,
@@ -112,6 +115,12 @@ class FakeRunner(FullMatchRunner):
         path = Path(checkpoint.path)
         return path.is_file() and sha256_file(path) == expected_sha256
 
+    def _verified_probe(self, path, expected):
+        return expected.model_copy(update={"path": str(path)})
+
+    def _verified_v1_probe(self, path, expected):
+        return self._verified_probe(path, expected)
+
 
 def test_crash_after_chunk_one_resumes_without_reprocessing_or_raw_sql(tmp_path: Path):
     repository = JobRepository(tmp_path / "jobs.sqlite3")
@@ -152,6 +161,107 @@ def test_crash_after_chunk_one_resumes_without_reprocessing_or_raw_sql(tmp_path:
     assert manifest.progress == 100
     assert all(chunk.status == "completed" for chunk in manifest.chunks)
     assert manifest.peak_observations == 3
+
+
+def test_real_v1_running_manifest_migrates_and_conservatively_reprocesses_chunks(
+    tmp_path: Path,
+):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    first = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        die_on_chunk=1,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        first.run(job.id)
+
+    manifest_path = first.workspace_for(job.id) / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 1
+    payload.pop("source_sha256")
+    payload.pop("proxy_sha256")
+    payload.pop("prepared_final_artifact")
+    payload["options"] = {
+        key: payload["options"][key]
+        for key in ("chunk_ms", "overlap_ms", "ocr_interval_ms", "scoreboard_region")
+    }
+    for probe_name in ("source", "proxy"):
+        payload[probe_name] = {
+            key: value
+            for key, value in payload[probe_name].items()
+            if key
+            in {
+                "path",
+                "container",
+                "video_codec",
+                "width",
+                "height",
+                "fps",
+                "frame_count",
+                "duration_ms",
+                "has_audio",
+            }
+        }
+    for chunk in payload["chunks"]:
+        chunk.pop("consensus_state")
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    Path(payload["source"]["path"]).write_bytes(b"bounded source")
+
+    resumed = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    completed = resumed.run(job.id)
+
+    assert completed.status is JobStatus.COMPLETED
+    assert resumed.processed == [0, 1, 2]
+    migrated = resumed.status(job.id)
+    assert migrated.schema_version == 2
+    assert migrated.options == resumed.options
+    assert migrated.source_sha256 != "0" * 64
+    assert migrated.proxy_sha256 != "0" * 64
+    assert not Path(migrated.source.path).exists()
+
+
+def test_v1_probe_verification_ignores_fields_that_did_not_exist_in_v1(
+    tmp_path: Path, monkeypatch
+):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    runner = FullMatchRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    legacy = MediaProbe(
+        path=str(tmp_path / "source.mov"),
+        container="mov,mp4",
+        video_codec="h264",
+        width=320,
+        height=180,
+        fps=25,
+        frame_count=250,
+        duration_ms=10_000,
+        has_audio=True,
+    )
+    current = legacy.model_copy(
+        update={
+            "pixel_format": "yuv420p",
+            "audio_codec": "aac",
+            "audio_start_ms": 20,
+            "audio_duration_ms": 9_980,
+        }
+    )
+    monkeypatch.setattr(runner_module, "probe_media", lambda path: current)
+
+    assert runner._verified_v1_probe(Path(legacy.path), legacy) == current
 
 
 def test_resume_reprocesses_completed_chunk_when_checksum_artifact_is_missing(
@@ -232,7 +342,7 @@ def test_controlled_preparation_failure_after_start_marks_job_failed(
         data_root=tmp_path,
     )
 
-    with pytest.raises(type(failure), match=str(failure)):
+    with pytest.raises(type(failure), match=str(failure) or None):
         runner.run(job.id)
 
     failed = repository.get(job.id)
@@ -346,6 +456,7 @@ def test_real_proxy_failure_is_lifecycle_guarded(tmp_path: Path, monkeypatch):
         runner.run(job.id)
 
     assert repository.get(job.id).status is JobStatus.FAILED
+    assert not (runner.workspace_for(job.id) / "source.mp4").exists()
 
 
 @pytest.mark.parametrize("manifest_body", ["{corrupt", '{"job_id":"another"}'])
@@ -409,6 +520,90 @@ def test_completed_fast_return_rejects_corrupt_proxy_checkpoint(tmp_path: Path):
         runner.run(job.id)
 
 
+def test_prepared_final_artifact_recovers_crash_before_database_completion(
+    tmp_path: Path,
+):
+    class DieBeforeCommitRepository(JobRepository):
+        fail_once = True
+
+        def complete_or_stop(self, job_id, *, output_path, metrics):
+            if self.fail_once:
+                self.fail_once = False
+                raise SimulatedProcessDeath
+            return super().complete_or_stop(
+                job_id, output_path=output_path, metrics=metrics
+            )
+
+    repository = DieBeforeCommitRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    first = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        first.run(job.id)
+
+    prepared = first.status(job.id).prepared_final_artifact
+    assert repository.get(job.id).status is JobStatus.RUNNING
+    assert prepared is not None
+    assert first.status(job.id).final_artifact is None
+
+    class MustNotEncodeAgain(FakeRunner):
+        def _finalize(self, **kwargs):
+            raise AssertionError("durable prepared artifact must be reused")
+
+    resumed = MustNotEncodeAgain(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    completed = resumed.run(job.id)
+
+    assert completed.status is JobStatus.COMPLETED
+    manifest = resumed.status(job.id)
+    assert manifest.prepared_final_artifact is None
+    assert manifest.final_artifact == prepared
+
+
+def test_completed_crash_window_promotes_only_precommitted_artifact_bytes(
+    tmp_path: Path,
+):
+    class CommitThenDieRepository(JobRepository):
+        def complete_or_stop(self, job_id, *, output_path, metrics):
+            super().complete_or_stop(job_id, output_path=output_path, metrics=metrics)
+            raise SimulatedProcessDeath from None
+
+    repository = CommitThenDieRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    runner = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        runner.run(job.id)
+
+    manifest = runner.status(job.id)
+    assert repository.get(job.id).status is JobStatus.COMPLETED
+    assert manifest.prepared_final_artifact is not None
+    assert manifest.final_artifact is None
+    Path(repository.get(job.id).output_path).write_bytes(b"replacement")
+
+    with pytest.raises(RuntimeError, match="integrity"):
+        runner.run(job.id)
+    recovered = runner.status(job.id)
+    assert recovered.final_artifact is None
+    assert recovered.prepared_final_artifact == manifest.prepared_final_artifact
+
+
 def test_runtime_provenance_is_immutable_and_output_affecting(tmp_path: Path):
     repository = JobRepository(tmp_path / "jobs.sqlite3")
     job = repository.create_with_id(
@@ -462,6 +657,46 @@ def test_runtime_provenance_is_immutable_and_output_affecting(tmp_path: Path):
     assert repository.get(job.id).status is JobStatus.FAILED
 
 
+def test_measured_ocr_executable_and_model_changes_reject_resume(tmp_path: Path):
+    tessdata = tmp_path / "tessdata"
+    tessdata.mkdir()
+    model = tessdata / "eng.traineddata"
+    executable = tmp_path / "tesseract"
+
+    def configure(version: str, model_bytes: bytes) -> TesseractCliOcrEngine:
+        executable.write_text(
+            f"#!/bin/sh\nprintf 'tesseract {version}\\n'\n", encoding="utf-8"
+        )
+        executable.chmod(0o755)
+        model.write_bytes(model_bytes)
+        return TesseractCliOcrEngine(tessdata, executable=str(executable))
+
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    first = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        ocr_engine=configure("9.1.0", b"model-v1"),
+        die_on_chunk=1,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        first.run(job.id)
+
+    resumed = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        ocr_engine=configure("9.2.0", b"model-v2"),
+    )
+    with pytest.raises(RuntimeError, match="runner options"):
+        resumed.run(job.id)
+
+
 def test_explicit_runner_options_preserve_frame_error_policy(tmp_path: Path):
     runner = FakeRunner(
         repository=JobRepository(tmp_path / "jobs.sqlite3"),
@@ -500,6 +735,61 @@ def test_corrupt_proxy_is_rebuilt_and_invalidates_every_chunk(tmp_path: Path):
     second.run(job.id)
 
     assert second.processed == [0, 1, 2]
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("metadata"), SimulatedProcessDeath()])
+def test_source_cleanup_survives_metadata_failure_or_process_death(
+    tmp_path: Path, failure: BaseException
+):
+    class FailingMetadataRepository(JobRepository):
+        def save_job_metadata(self, job_id, *, source=None, output=None):
+            del job_id, source, output
+            raise failure
+
+    repository = FailingMetadataRepository(
+        tmp_path / f"{type(failure).__name__}.sqlite3"
+    )
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    runner = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    )
+
+    with pytest.raises(type(failure), match=str(failure) or None):
+        runner.run(job.id)
+
+    assert not (runner.workspace_for(job.id) / "source.mp4").exists()
+
+
+def test_resume_removes_validated_localized_source_leftover(tmp_path: Path):
+    repository = JobRepository(tmp_path / "jobs.sqlite3")
+    job = repository.create_with_id(
+        "job-1", "s3://football-media/uploads/video.mp4", "video.mp4"
+    )
+    first = FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+        die_on_chunk=1,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        first.run(job.id)
+    source_path = Path(first.status(job.id).source.path)
+    source_path.write_bytes(b"bounded source")
+
+    FakeRunner(
+        repository=repository,
+        object_store=InMemoryObjectStore(),
+        bucket="football-media",
+        data_root=tmp_path,
+    ).run(job.id)
+
+    assert not source_path.exists()
 
 
 def test_track_namespace_is_deterministic_and_chunk_local():
@@ -603,6 +893,7 @@ def test_stop_during_preparation_stops_without_publishing_manifest(tmp_path: Pat
 
     assert stopped.status is JobStatus.STOPPED
     assert not (runner.workspace_for(job.id) / "manifest.json").exists()
+    assert not (runner.workspace_for(job.id) / "source.mp4").exists()
 
 
 def test_stop_during_s3_localization_removes_partial_and_stops(tmp_path: Path):
