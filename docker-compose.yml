@@ -1,0 +1,33 @@
+services:
+  backend:
+    build: .
+    command: uvicorn football_intelligence.api:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FOOTBALL_DATA_ROOT: /app/data
+      FOOTBALL_DATABASE_URL: sqlite:////app/data/db/football_intelligence.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  ui:
+    build: .
+    command: streamlit run src/football_intelligence/ui.py --server.address 0.0.0.0 --server.port 8501
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      FOOTBALL_API_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+
