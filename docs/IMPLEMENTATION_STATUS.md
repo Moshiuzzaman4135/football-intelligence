@@ -6,7 +6,7 @@ The mandatory M0-M8 vertical slice is implemented and has run both through the C
 
 ## CURRENT MILESTONE
 
-The restartable single-host full-match MVP runner is implemented. A validated MinIO job now reaches safe localization, bounded proxy/chunks, candidate events, manual-ROI scoreboard OCR, a screen-space heat map, and validated annotated H.264 output while preserving the original short-clip path.
+Stable handoff after the single-host full-match MVP and the browser uploader/results page. The short-clip M0-M8 showcase, durable multipart upload/control plane, restartable full-match runner, and the FastAPI-served `/full-match` browser flow (direct part transfer, chunk progress, OCR/heat-map/video results) are all implemented and verified. The next milestone is a real-broadcast OCR/detector evidence benchmark with a manual scoreboard ROI.
 
 ## COMPLETED MILESTONES
 
@@ -23,10 +23,11 @@ The restartable single-host full-match MVP runner is implemented. A validated Mi
 - Full-match Task 2 durable SQLAlchemy job/stage persistence, compare-and-set lifecycle operations, Alembic schema, protocol migration, and read-only legacy SQLite import.
 - Full-match Task 3 multipart upload service and API, in-memory/filesystem/S3 adapters, and MinIO Compose runtime.
 - Full-match MVP single-host runner with atomic manifest/resume, 120-second/5-second-overlap bounded chunks, manual Tesseract OCR, 32x18 screen-space heat map, non-overlap H.264 finalization/audio mux, and run/status/scoreboard/heat-map APIs.
+- Browser multipart uploader and results page (`GET /full-match`): self-contained HTML/JS that computes the file SHA-256 in the browser, transfers 16 MiB parts directly to MinIO via presigned URLs, starts the full-match runner, polls chunk progress, and renders annotated video, event timeline, scoreboard OCR, and heat map without buffering in Streamlit.
 
 ## CURRENT WORK
 
-Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch `feat/full-match-production` in `.worktrees/full-match-production`.
+DeepSeek recovery session: merged the worktree `feat/full-match-production` branch into `main` (commit `99e713c`), re-verified the merged state, and implemented the browser uploader/results page with contract tests, Node-verified JS, MinIO CORS, and a live end-to-end flow check.
 
 ## LAST SUCCESSFUL COMMAND
 
@@ -34,11 +35,11 @@ Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch
 
 ## NEXT EXACT ACTION
 
-Run a representative real broadcast with a configured manual scoreboard ROI and review OCR/detector evidence quality before choosing the next model milestone. Distributed Celery execution, automatic ROI discovery, pitch calibration, and a React UI remain deferred.
+Run a representative legal real broadcast through the single-host MVP with its manual scoreboard ROI configured. Record total/chunk runtime, peak memory, OCR precision/failures, event review quality, and final media probe. Use that evidence to choose the next narrow milestone (likely detector/tracker quality or the four-class football detector on the remote RTX 3080). Distributed Celery execution, automatic ROI discovery, pitch calibration, and a React UI remain deferred.
 
 ## FILES MODIFIED
 
-Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Tasks 1-2 added full-match contracts, chunk planning, SQLAlchemy repositories/stage operations, migrations, and legacy import. Task 3 added focused object-store and upload modules, metadata-only multipart API routes, Boto3 S3 support, MinIO configuration, and upload service/API/adapter/integration tests while retaining the legacy short-clip upload path.
+Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Tasks 1-2 added full-match contracts, chunk planning, SQLAlchemy repositories/stage operations, migrations, and legacy import. Task 3 added focused object-store and upload modules, metadata-only multipart API routes, Boto3 S3 support, MinIO configuration, and upload service/API/adapter/integration tests while retaining the legacy short-clip upload path. The MVP runner added `fullmatch/{media,manifest,ocr,heatmap,runner,provenance}.py` plus full-match API seams. The browser page added `fullmatch/web.py`, the `GET /full-match` route, MinIO CORS in Compose, `tools/check_web_js.py`, `tools/live_fullmatch_check.py`, and `tests/fullmatch/test_web_page.py`.
 
 ## MODELS INSTALLED
 
@@ -74,6 +75,8 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 - Full-match MVP focused suite: 25 passed. Complete protected suite: 173 passed, two environment-gated skips, and the known Starlette warning. The generated two-chunk H.264+AAC integration and real Tesseract crop run in the normal Docker suite.
 - Full-match MVP Fix Round 1 focused suite: 54 passed. Complete protected suite: 202 passed, two environment-gated skips, and the known Starlette warning. The rebuilt image repeated the real two-chunk H.264+AAC, strict probe/decode/faststart, Tesseract ROI, and HTTP byte-range coverage.
 - Full-match MVP Fix Round 2 focused suite: 72 passed. Complete protected suite: 220 passed, two environment-gated skips, and the known Starlette warning. The rebuilt image repeated the generated two-chunk H.264+AAC/range integration, corrupted-media strict decode, and measured-provenance tests.
+- DeepSeek recovery session: merged worktree into `main`; full suite on merged `main`: 220 passed, 2 skips. After the browser page: full suite 231 passed, 5 skips (3 Node-required JS tests skip inside Docker); `python3 tools/check_web_js.py` passed all Node SHA-256/part-planner checks on the host; live Compose full-match browser flow passed end to end (130 s source, 2/2 chunks, OCR observation, PNG heat map, H.264+AAC faststart artifact); MinIO CORS preflight and signed PUT verified.
+- DeepSeek recovery session OCR evidence: a synthetic broadcast-style scoreboard source (`12:00 ARS 0 - 0 CHE` → `13:00 ARS 0 - 1 CHE`) produced 125 accepted OCR observations at 0.93-0.94 raw confidence and exactly one `score_change_candidate` at 65.0 s (0.938 confidence, source `ocr.tesseract.consensus`, monotonic clock 720 s → 780 s, `needs_review: true`). Real-broadcast accuracy remains unverified pending a licensed clip.
 
 ## KNOWN FAILURES
 
@@ -84,7 +87,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 
 ## KNOWN LIMITATIONS
 
-The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; full-match raw observations are deliberately not persisted. Full-match OCR requires an operator-supplied broadcaster ROI and emits score-change candidates, never confirmed goals. Its heat map is screen-space/not pitch calibrated. Team classification, RTSP, action spotting, automatic ROI discovery, distributed execution, and model-based event fusion are not implemented. Authentication arrives later, so `X-Owner-ID` is only the current ownership seam and nonlocal exposure remains unsupported. MinIO should have an operator-managed incomplete-multipart lifecycle rule longer than the 24-hour application expiry; completed sources must not use that expiry rule. No lockfile or remote heavy-model benchmark exists yet.
+The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; full-match raw observations are deliberately not persisted. Full-match OCR requires an operator-supplied broadcaster ROI and emits score-change candidates, never confirmed goals. Its heat map is screen-space/not pitch calibrated. The browser uploader hashes the full file in JavaScript, which is slow for multi-GiB sources (WebAssembly or server-side verification is future work), and its direct part PUTs rely on the MinIO CORS setting that Compose enables only for the loopback demo. Team classification, RTSP, action spotting, automatic ROI discovery, distributed execution, and model-based event fusion are not implemented. Authentication arrives later, so `X-Owner-ID` is only the current ownership seam and nonlocal exposure remains unsupported. MinIO should have an operator-managed incomplete-multipart lifecycle rule longer than the 24-hour application expiry; completed sources must not use that expiry rule. No lockfile or remote heavy-model benchmark exists yet.
 
 ## BLOCKERS
 
@@ -93,3 +96,96 @@ None for the stable short-clip showcase, durable multipart upload foundation, or
 ## PUBLICATION
 
 Public repository: `https://github.com/Moshiuzzaman4135/football-intelligence`. Initial complete vertical-slice publication commit: `a9410af3056b2365a25746512b3665a40db80b45` on `main`.
+
+---
+
+# DEEPSEEK RECOVERY AUDIT — 2026-08-18
+
+Audit performed by a fresh DeepSeek session after the previous Codex session ended. Every item below was re-inspected and re-run rather than trusted from checkboxes.
+
+## Last Codex commit
+
+`2c0ca5a fix: make full-match completion recoverable` on branch `feat/full-match-production` in the git worktree at `.worktrees/full-match-production`.
+
+## Current git state
+
+- `main` now at `99e713c` — a merge commit that brings the three MVP-runner commits (`9612aed`, `5105e0b`, `2c0ca5a`) from the worktree branch into `main`.
+- Working tree clean after the merge; local `.env` created from `.env.example` (gitignored, dummy local values only).
+- `origin/main` is still at `2287eb2`; the merge has not been pushed yet.
+- Branch `feat/full-match-production` and its worktree remain registered; `.worktrees/` is ignored.
+
+## Implemented and verified (re-run this session)
+
+- Full protected suite on merged `main` through Docker: 220 passed, 2 environment-gated skips, 1 known non-failing Starlette `TestClient` warning (17.92 s).
+- Ruff: all checks passed. `git diff --check`: clean.
+- Short-clip vertical slice: `demo_fixture` generation plus `football-intelligence process` completed with H.264 640x360/10 FPS/300 frames/30.000 s output and persisted metadata.
+- Full-match MVP runner (streaming localization, validated proxy, atomic manifest v2 + v1 migration, 120 s/5 s-overlap chunks, manual-ROI Tesseract OCR consensus, 32x18 screen-space heat map, non-overlap H.264 finalize with audio mux and strict validation, idempotent run/status/scoreboard/heat-map APIs) — covered by 72 focused full-match tests plus the complete suite.
+- Docker images: `full-match-production-backend:latest` (Python 3.12, FFmpeg, Tesseract 5.5.0 + pinned `tessdata_fast`) present and used for all verification runs.
+
+## Implemented but not verified
+
+- Local RTX 3050 YOLO11n CUDA run from the earlier session: documented, but `nvidia-smi` cannot currently communicate with the NVIDIA driver on this host, so no fresh GPU verification was possible this session.
+- Real-broadcast OCR/detector evidence-quality benchmark (the worktree's documented NEXT EXACT ACTION): not yet executed; no broadcast clip containing a scoreboard is downloaded.
+
+## Partially implemented
+
+- Tesseract OCR: adapter/parser/consensus are implemented and tested on synthetic crops; broadcaster-specific accuracy is unverified. ROI is normalized-environment configuration only; there is no browser ROI control.
+- Heat map: fixed 32x18 screen-space density only, explicitly not pitch-calibrated.
+- Multipart upload: full API/object-store path is implemented and tested; there is no browser uploader page yet.
+- Full-match runner: single-host, one-at-a-time admission; no Celery/distributed execution.
+
+## Planned but not implemented
+
+- Browser multipart uploader + results page (handoff "Next exact implementation" item 7).
+- Automatic scoreboard ROI discovery and ROI browser control.
+- Team classification; ByteTrack/BoT-SORT; four-role football detector (e.g. gianpaj YOLOv8x on the remote RTX 3080).
+- Pitch calibration/radar (PnLCalib/No-Bells-Just-Whistles pending GPL/weight-term approval; Broadcast2Pitch/SoccerNetGSR reference only).
+- Action spotting (CALF 17-action ONNX is the qualification target; AdaSpot optional MIT 10-class supplement; T-DEED excluded by GPL).
+- Model-based event fusion; Celery/distributed workers; authentication; RTSP ingestion.
+
+## Broken components
+
+- None found in code. Environment notes: host `nvidia-smi` cannot reach the NVIDIA driver (GPU unavailable this session, CPU/Docker paths unaffected); system Python 3.14.6 has no PyTorch — Docker Python 3.12 is the application runtime.
+
+## Downloaded models and checkpoints
+
+- Ignored `models/yolo11n.pt` (SHA-256 `0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1`).
+- Pinned Docker image asset `tessdata_fast` `eng.traineddata` (SHA-256 `7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2`, Apache-2.0).
+- No external research model repositories are cloned anywhere (no `.research/`, no `/tmp/football-research`).
+
+## Existing Python environments
+
+- System Python 3.14.6 (no PyTorch). No `.venv` exists.
+- Docker images: `football-intelligence-backend:latest`, `football-intelligence-ui:latest`, `full-match-production-backend:latest` (Python 3.12).
+- Ignored `data/ml-site/` (~382 MB) holds the Ultralytics 8.4.121 + CUDA PyTorch environment used by the earlier YOLO11n run.
+
+## Existing Docker services
+
+- Running containers: unrelated `memora-*` services (ports 8000, 8090, 5432, 6379, 9000-9001) — left untouched.
+- No football-intelligence containers currently running; images are built. Compose defines backend/postgres/migrate/minio/minio-init/ui on loopback ports 8010/8510/9010/9011.
+
+## Existing generated videos
+
+- `data/outputs/*.annotated.mp4` (8 H.264 outputs); `data/uploads/synthetic-football-demo.mp4` plus four previously uploaded clips.
+
+## Existing test videos
+
+- Ignored `tests/assets/football-demo.mp4` (17.44 s Pexels training-field clip, CC0, 1920x1080/25 FPS).
+- Generated synthetic fixture (30 s, 640x360, 10 FPS).
+
+## Existing checkpoints
+
+- `models/yolo11n.pt` only (see above).
+
+## Existing frontend/UI state
+
+- Streamlit short-clip UI (`src/football_intelligence/ui.py`); its health was verified in earlier sessions, not relaunched this session. No browser multipart/results page exists.
+
+## Current blockers
+
+- Local GPU driver unavailable this session (`nvidia-smi` fails) — does not block the CPU-capable demo.
+- No legal broadcast clip with a visible scoreboard is downloaded yet (needed for the OCR quality benchmark).
+
+## FIRST REAL INCOMPLETE MILESTONE
+
+The browser multipart uploader + results page (handoff item 7) — implemented and verified this session: a small FastAPI-served JavaScript page (`GET /full-match`) that creates an upload session, presigns and transfers 16 MiB parts directly, starts the full-match runner, shows progress, and exposes annotated video/heat-map/scoreboard/events without buffering the file or final video in Streamlit. The next milestone is the real-broadcast OCR/detector evidence benchmark with a manual scoreboard ROI.

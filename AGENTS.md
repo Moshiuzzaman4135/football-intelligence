@@ -81,7 +81,16 @@ docker compose run --rm --no-deps -v "$PWD:/app" backend \
 ```
 
 Default published ports are API `8010` and UI `8510`; override them with
-`FOOTBALL_BACKEND_PORT` and `FOOTBALL_UI_PORT`.
+`FOOTBALL_BACKEND_PORT` and `FOOTBALL_UI_PORT`. The full-match browser
+uploader/results page is served by the API at `http://localhost:8010/full-match`.
+
+Full-match browser-flow verification:
+
+```bash
+python3 tools/check_web_js.py              # host with Node: JS SHA-256 + part planner
+python3 tools/live_fullmatch_check.py --video data/uploads/your-source.mp4
+                                           # against a started Compose stack
+```
 
 ## Architecture and coding rules
 

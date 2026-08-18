@@ -13,6 +13,8 @@ data/outputs/*
 !data/outputs/.gitkeep
 data/db/*
 !data/db/.gitkeep
+data/fullmatch/*
+!data/fullmatch/.gitkeep
 models/*.pt
 models/*.onnx
 data/ml-site/

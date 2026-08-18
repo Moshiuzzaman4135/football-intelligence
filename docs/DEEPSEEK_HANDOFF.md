@@ -2,7 +2,7 @@
 
 ## Read this first
 
-This repository is at a stable checkpoint after the single-host full-match MVP. Do not claim reliable goal/free-kick spotting, broadcaster-independent OCR, pitch-calibrated heat maps, or distributed production execution. The short-clip showcase and bounded restartable full-match mechanics both work end to end.
+This repository is at a stable checkpoint after the single-host full-match MVP and the browser uploader/results page. Do not claim reliable goal/free-kick spotting, broadcaster-independent OCR, pitch-calibrated heat maps, or distributed production execution. The short-clip showcase, bounded restartable full-match mechanics, and the `/full-match` browser flow all work end to end.
 
 Before editing:
 
@@ -26,13 +26,14 @@ Then read `AGENTS.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/DECISIONS.md`, `do
 - Same-bucket streaming localization, FFprobe validation, 720p/25 proxy, atomic manifest, restartable 120-second chunks with five seconds of context, non-overlap H.264 rendering/audio mux, and media validation.
 - Manual normalized-ROI Tesseract OCR at 1 FPS with raw evidence, clock/score consensus, candidate-only score changes, and a fixed screen-space 32x18 heat map.
 - Idempotent/resumable full-match run/status/scoreboard/heat-map APIs with one admission slot; raw full-match track observations never enter SQL.
-- Current verification: 173 tests passed, two environment-gated skips, Ruff clean, a real generated two-chunk Docker media run passed, and the pinned Tesseract crop test passed.
+- FastAPI-served browser page (`GET /full-match`): computes the file SHA-256 in JavaScript, transfers 16 MiB parts directly to MinIO via presigned URLs (MinIO CORS configured in Compose), starts the runner, polls chunk progress, and renders annotated video, events, scoreboard OCR, and heat map without buffering in Streamlit.
+- Current verification: 231 tests passed, five environment-gated skips (three Node-required JS tests skip inside Docker), Ruff clean, `python3 tools/check_web_js.py` Node checks pass, and a live Compose browser-flow check passed end to end on a generated 130-second two-chunk source.
 
 ## What does not work yet
 
 - No automatic scoreboard ROI discovery or ROI browser control exists; configure normalized ROI environment values.
 - No team classification, pitch calibration, ByteTrack, action model, or core goal/free-kick fusion exists.
-- No browser multipart uploader exists; multipart APIs are currently exercised through API/tests.
+- The browser uploader hashes multi-GiB files slowly in JavaScript (WebAssembly/server-side verification is future work).
 - No authentication. `X-Owner-ID` is a trusted local seam only. Keep ports loopback-only.
 - The runner is single-host and one-at-a-time, not Celery/distributed. A real 90-minute broadcast runtime/quality benchmark has not been recorded.
 

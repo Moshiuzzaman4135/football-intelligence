@@ -24,9 +24,12 @@ docker compose run --rm --no-deps \
 
 Open [http://localhost:8510](http://localhost:8510), choose `data/uploads/synthetic-football-demo.mp4`, click **Process video**, and refresh progress until complete. The 30-second known fixture produces a reviewable kick candidate around 1.6 seconds, an evidence panel, tracking IDs, trajectories, and a playable annotated video.
 
+For a full match, open the FastAPI-served browser page — [http://localhost:8010/full-match](http://localhost:8010/full-match) — select a match video (MP4/MKV/MOV, up to 12 GiB), and click **Upload and process**. The page computes the required SHA-256 in the browser, transfers 16 MiB parts directly to MinIO through presigned URLs, then starts the restartable full-match runner and shows chunk progress, the annotated video, the event timeline, scoreboard OCR observations, and the screen-space heat map.
+
 Useful endpoints:
 
 - UI: [http://localhost:8510](http://localhost:8510)
+- Full-match browser page: [http://localhost:8010/full-match](http://localhost:8010/full-match)
 - API docs: [http://localhost:8010/docs](http://localhost:8010/docs)
 - Health: [http://localhost:8010/health](http://localhost:8010/health)
 
@@ -48,11 +51,11 @@ docker compose run --rm --no-deps -v "$PWD:/app" backend \
 
 Generated uploads, SQLite metadata, outputs, weights, and downloaded fixtures are ignored by Git. See `docs/DEMO.md` for the narrated walkthrough and `docs/MODELS.md` for the optional GPU/YOLO command.
 
-For a completed multipart-upload job, start or resume the single-host full-match runner with `POST /jobs/{id}/full-match/run`. Inspect `GET /jobs/{id}/full-match/status`, `/scoreboard`, `/heat-map`, `/events`, and `/annotated-video`. The status manifest checkpoints 120-second chunks with five seconds of context; a repeated run request resumes an orphaned running job after process restart and only one full match is admitted at a time.
+For a completed multipart-upload job, start or resume the single-host full-match runner with `POST /jobs/{id}/full-match/run`. Inspect `GET /jobs/{id}/full-match/status`, `/scoreboard`, `/heat-map`, `/events`, and `/annotated-video`. The status manifest checkpoints 120-second chunks with five seconds of context; a repeated run request resumes an orphaned running job after process restart and only one full match is admitted at a time. The browser page at `/full-match` drives this entire flow without buffering the file or final video in Streamlit.
 
 ## Current capability boundary
 
-The short-video UI flow is usable end to end. The backend also supports durable resumable full-match upload to MinIO, creates a job only after validation, and processes that `s3://` source through safe localization, a 720p/25 proxy, restartable chunks, manual-ROI Tesseract OCR, a screen-space heat map, and a validated annotated video. OCR score changes are reviewable candidates only; robust semantic goal/free-kick spotting and production distributed execution remain later milestones.
+The short-video UI flow is usable end to end. The backend also supports durable resumable full-match upload to MinIO, creates a job only after validation, and processes that `s3://` source through safe localization, a 720p/25 proxy, restartable chunks, manual-ROI Tesseract OCR, a screen-space heat map, and a validated annotated video. A small FastAPI-served browser page (`/full-match`) drives upload/process/results. OCR score changes are reviewable candidates only; robust semantic goal/free-kick spotting and production distributed execution remain later milestones.
 
 ## What this prototype does not claim
 

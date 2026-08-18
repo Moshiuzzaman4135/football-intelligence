@@ -11,7 +11,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Header, HTTPException, Response, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from football_intelligence.bus import EventBus
@@ -20,6 +20,7 @@ from football_intelligence.domain import JobRecord, JobStatus, ScoreboardRegion,
 from football_intelligence.fullmatch.manifest import RunnerOptions
 from football_intelligence.fullmatch.ocr import TesseractCliOcrEngine
 from football_intelligence.fullmatch.runner import FullMatchRunner
+from football_intelligence.fullmatch.web import PAGE_PATH, page_html
 from football_intelligence.object_store import (
     FilesystemObjectStore,
     MultipartPresignUnsupported,
@@ -197,6 +198,13 @@ def create_app(
     @application.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.get(PAGE_PATH, response_class=HTMLResponse)
+    def full_match_page() -> HTMLResponse:
+        return HTMLResponse(
+            content=page_html(),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @application.post("/jobs/upload", response_model=JobRecord, status_code=201)
     async def upload_job(file: Annotated[UploadFile, File()]) -> JobRecord:

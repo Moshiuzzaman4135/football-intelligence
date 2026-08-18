@@ -77,3 +77,11 @@ Use Tesseract 5 with the official Apache-2.0 `tessdata_fast` English model behin
 ## 2026-08-18: single-host MVP before enterprise deployment
 
 Deliver a restartable atomic-manifest chunk runner and a minimal FastAPI-served multipart/results page before Celery, React, Caddy, and production authentication. This produces an actually usable full-match path quickly while preserving adapter boundaries for the original production plan. Initial heat maps are explicitly screen-space density, not calibrated tactical coordinates.
+
+## 2026-08-18: single-file FastAPI-served browser uploader page
+
+The full-match browser UX is one self-contained HTML/JS document served at `GET /full-match` from the same origin as the API (no CORS for API calls, no build step, no React). The client computes the required full-file SHA-256 incrementally in JavaScript (verified against `node:crypto` by `tools/check_web_js.py`), transfers each 16 MiB part directly to a presigned MinIO URL with the signed length/checksum headers, then starts the runner and polls the manifest. MinIO needs `MINIO_API_CORS_ALLOW_ORIGIN=*` (enabled in Compose, loopback-only) so the browser preflight for `content-length,x-amz-checksum-sha256` succeeds; the backend still never proxies part bodies. JS hashing is acknowledged as slow for multi-GiB files and is a documented limitation rather than silently claiming scale.
+
+## 2026-08-18: live browser-flow verification is a repeatable tool
+
+`tools/live_fullmatch_check.py` performs the exact API calls the page makes against a running Compose stack, and `tools/check_web_js.py` verifies the embedded JavaScript on any host with Node. These keep the browser flow verifiable without a Selenium/browser dependency.

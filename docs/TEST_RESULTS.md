@@ -120,3 +120,20 @@ Fresh image checks:
 - Runtime provenance measures Tesseract's executable version and configured traineddata bytes, Ultralytics weight bytes, exact color thresholds, tracker parameters, and adapter source bytes. Missing tessdata, unresolved/non-file weights, and uninspectable adapters fail closed.
 - Focused Docker full-match suite: 72 passed. Complete protected suite: 220 passed, two environment-gated skips, and the pre-existing Starlette warning.
 - Repository-wide Ruff, Compose config with ephemeral values, rebuilt backend image, and `git diff --check` passed. The rebuilt image repeated seven real-media/provenance integration tests, including the generated 121-second two-chunk artifact and corrupted-media decode rejection.
+
+## Browser multipart uploader and results page — 2026-08-18 (DeepSeek recovery session)
+
+- New `GET /full-match` page: FastAPI-served self-contained HTML/JS uploader and results viewer. Contract tests assert the page embeds the exact endpoint map and that every endpoint exists as an API route.
+- JS SHA-256 verified on a host with Node 22 against `node:crypto`: standard vectors (empty, `abc`, 1,000,000 `a`), 40 randomized cross-checks up to 200 KB, and incremental-vs-one-shot equivalence. The JS part planner matches the server's part sizing for representative sizes (1 B … 10 parts − 1 B). Run `python3 tools/check_web_js.py` to repeat.
+- Protected suite grew to 231 passed, 5 environment-gated skips (3 node-required JS tests skip inside Docker), 1 known Starlette warning. Ruff and `git diff --check` clean.
+- MinIO CORS: `MINIO_API_CORS_ALLOW_ORIGIN=*` added to Compose (loopback-only ports). Verified OPTIONS preflight returns 204 with `Access-Control-Allow-Origin` for the page origin, methods PUT, and headers `content-length,x-amz-checksum-sha256`; signed PUT returns 200 + ETag.
+- Live Compose stack (PostgreSQL + Alembic + MinIO + backend on 127.0.0.1:8010/9010/9011) full flow via `tools/live_fullmatch_check.py` on a generated 130-second 320x180/10 FPS H.264+AAC source: page served; upload session created; part presigned/PUT directly to MinIO; job created after object validation; full-match run reached completed/100% with 2/2 chunks; 1 scoreboard OCR observation; PNG heat map; annotated video 200. Manifest: schema v2, proxy 320x180/10 FPS with audio, chunk 0 0-120000 ms, chunk 1 115000-130000 ms (output from 120000 ms), 130 raw OCR samples, peak 4 observations.
+- FFprobe of the live artifact: H.264, 320x180, yuv420p, 10/1 FPS, AAC, 130.000 s, faststart (moov before mdat) — browser-playable.
+
+## Synthetic broadcast scoreboard OCR evidence — 2026-08-18 (DeepSeek recovery session)
+
+- Generated a 130-second 640x360/10 FPS H.264+AAC source with a rendered broadcast-style scoreboard: `12:00 ARS 0 - 0 CHE` for the first 60 s, then `13:00 ARS 0 - 1 CHE` (score flip at t=60 s, clock +1 minute).
+- Ran the full browser flow (2-part multipart upload through MinIO, full-match run) with the manual ROI configured (`FOOTBALL_SCOREBOARD_REGION_X=0.26 Y=0.02 W=0.48 H=0.13`).
+- Tesseract 5.5.0 read the crop cleanly: raw samples at 1 FPS were `12:00 ARS 0 - 0 CHE` (confidence 0.84-0.94) then `13:00 ARS 0 - 1 CHE` (0.92-0.94). The parser recovered clock, team tokens, and score; the consensus accepted 125 observations with monotonic clock (720 s → 780 s).
+- Exactly one `score_change_candidate` event was emitted at 65.0 s (score flip at 60 s plus the 5 s stability window): confidence 0.938, source `ocr.tesseract.consensus`, producer version 5.5.0, `score_transition: 0-0 -> 0-1`, frame refs 600-650, supporting reads retained in `original_model_output`, `needs_review: true`.
+- Honest boundary: this validates the OCR/consensus mechanics on a synthetic, high-contrast scoreboard. Real-broadcast accuracy (fonts, glare, logos, cropped clocks) is not yet measured; that remains the NEXT EXACT ACTION and needs a licensed broadcast clip.

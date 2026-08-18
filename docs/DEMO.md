@@ -44,14 +44,18 @@ The selected real clip is not expected to produce an event with current heuristi
 - Team clustering, pitch/radar coordinates, RTSP, action spotting, OCR/audio/VLM evidence, and websocket updates are deferred.
 - Event types are reviewable candidates, not Opta-level assertions.
 - Durable full-match processing is single-host and one-at-a-time; its manual-ROI OCR and screen-space heat map are auditable MVP outputs, not robust goal/free-kick recognition or pitch calibration.
+- The browser page computes the required file SHA-256 in JavaScript; multi-GiB sources hash slowly in the browser (WebAssembly/server-side verification is future work). Direct part PUTs need the MinIO CORS setting that Compose enables for the loopback demo.
 
 ## WHAT CAN BE TESTED NOW
 
 1. Run the short generated fixture through Streamlit and verify progress, visual tracking IDs, the kick candidate/evidence, and annotated-video playback.
 2. Use FastAPI `/docs` to test jobs, status, stop, events, compact tracks, and the annotated-video endpoint.
 3. Use `/uploads` plus the presign/status/complete/abort endpoints to test restart-safe MinIO multipart upload. Each presign response supplies the exact length and SHA-256 headers required for the direct PUT.
-4. After completing a MinIO upload, call `POST /jobs/{id}/full-match/run`. Poll `/full-match/status`, then inspect `/scoreboard`, `/heat-map`, `/events`, and the range-capable `/annotated-video` response. Repeating the run request is safe and resumes an orphaned running manifest after an API restart.
-5. The full-match manifest and artifacts live under `data/fullmatch/{job_id}`. Completed chunks have SHA-256 checksums; raw OCR text/confidence remains audit evidence in the manifest, while raw frame observations never enter SQL.
-6. Run `pytest -q`; live MinIO and Docker-host Compose tests remain environment-gated, while the generated 121-second two-chunk media integration runs in the normal Docker suite.
+4. Use the browser page at `http://localhost:8010/full-match`: choose a match video (MP4/MKV/MOV, up to 12 GiB), click **Upload and process**, and watch hashing, direct part transfer, chunk progress, then the annotated video, event timeline, scoreboard OCR observations, and heat map. The page needs no Streamlit and never buffers the file or final video in the browser UI.
+5. After completing a MinIO upload (through the browser page or the API), call `POST /jobs/{id}/full-match/run`. Poll `/full-match/status`, then inspect `/scoreboard`, `/heat-map`, `/events`, and the range-capable `/annotated-video` response. Repeating the run request is safe and resumes an orphaned running manifest after an API restart.
+6. The full-match manifest and artifacts live under `data/fullmatch/{job_id}`. Completed chunks have SHA-256 checksums; raw OCR text/confidence remains audit evidence in the manifest, while raw frame observations never enter SQL.
+7. Run `pytest -q`; Node-required JS tests, live MinIO, and Docker-host Compose tests remain environment-gated, while the generated two-chunk media integration runs in the normal Docker suite.
+8. On a host with Node, run `python3 tools/check_web_js.py` to verify the browser SHA-256 and part-planning JavaScript against `node:crypto`.
+9. Against a started Compose stack, run `python3 tools/live_fullmatch_check.py --video /path/to/source.mp4` to repeat the full browser-flow verification from the API (page, multipart transfer, run, polling, results).
 
 The full-match MVP is deliberately single-host and admits one match at a time. Set the normalized `FOOTBALL_SCOREBOARD_REGION_*` values for the broadcaster before a real run. OCR cannot confirm a goal by itself, and the heat map is screen-space density—not pitch-calibrated player position.
