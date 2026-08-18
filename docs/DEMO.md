@@ -24,9 +24,9 @@ Real-footage evaluation fixture: ignored `tests/assets/football-demo.mp4`, from 
 ## WHAT TO SHOW
 
 1. Choose `data/uploads/synthetic-football-demo.mp4` in the browser and click **Process video**.
-2. Show status/progress advancing to completion.
+2. Show the progress advancing on its own (the live panel now auto-refreshes; no manual refresh).
 3. Play the H.264 annotated output; point out player/ball boxes, visual track IDs, timestamp, and trajectory trail.
-4. Expand the event timeline entry and show confidence, ball-speed evidence, source, and the explicit review flag.
+4. Expand the event timeline entry and click **▶ Seek video** to jump the player to the kick candidate, or **▶ Play clip** to watch the short 8-second event clip. Show confidence, ball-speed evidence, source, and the explicit review flag.
 5. Show processing metrics in the video panel.
 6. Optionally explain the actual YOLO11n real-clip result in `docs/MODELS.md` and why the deterministic detector is not claimed as accurate on real footage.
 

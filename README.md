@@ -51,7 +51,7 @@ docker compose run --rm --no-deps -v "$PWD:/app" backend \
 
 Generated uploads, SQLite metadata, outputs, weights, and downloaded fixtures are ignored by Git. See `docs/DEMO.md` for the narrated walkthrough and `docs/MODELS.md` for the optional GPU/YOLO command.
 
-For a completed multipart-upload job, start or resume the single-host full-match runner with `POST /jobs/{id}/full-match/run`. Inspect `GET /jobs/{id}/full-match/status`, `/scoreboard`, `/heat-map`, `/events`, and `/annotated-video`. The status manifest checkpoints 120-second chunks with five seconds of context; a repeated run request resumes an orphaned running job after process restart and only one full match is admitted at a time. The browser page at `/full-match` drives this entire flow without buffering the file or final video in Streamlit.
+For a completed multipart-upload job, start or resume the single-host full-match runner with `POST /jobs/{id}/full-match/run`. Inspect `GET /jobs/{id}/full-match/status`, `/scoreboard`, `/heat-map`, `/events`, and `/annotated-video`. Per event, `GET /jobs/{id}/events/{event_id}/clip` returns a short 8-second annotated clip and `GET /jobs/{id}/events/{event_id}/thumbnail` returns a frame. The status manifest checkpoints 120-second chunks with five seconds of context; a repeated run request resumes an orphaned running job after process restart and only one full match is admitted at a time. The browser page at `/full-match` drives this entire flow without buffering the file or final video in Streamlit, and both the Streamlit showcase and the `/full-match` page show a live, click-to-seek event timeline with per-event clips.
 
 ## Current capability boundary
 

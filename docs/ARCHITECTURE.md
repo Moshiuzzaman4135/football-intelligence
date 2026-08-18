@@ -31,7 +31,8 @@ Upload/local/RTSP -> source probe/frame iterator
 - `fullmatch/manifest.py` and `runner.py`: atomic immutable-option manifest, overlap-aware chunk checkpoints, bounded detection/tracking/event/overlay execution, resume, final concatenation/audio mux, and artifact validation.
 - `fullmatch/ocr.py` and `heatmap.py`: manual-ROI Tesseract TSV evidence/score consensus and fixed 32x18 screen-space density artifacts.
 - `fullmatch/web.py`: the self-contained FastAPI-served browser page (`GET /full-match`) that hashes the file, presigns/transfers 16 MiB parts directly to MinIO, starts the runner, polls chunk progress, and renders annotated video, events, scoreboard OCR, and heat map.
-- `ui.py`: upload/start/progress/video/timeline/evidence showcase.
+- `clips.py`: synchronous event clip (H.264/AAC) and thumbnail (PNG) extraction from the annotated output, cached under `data/clips`.
+- `ui.py`: upload/start/progress/video/timeline/evidence showcase with auto-refresh and click-to-seek/clip events.
 
 ## Normalized contracts
 

@@ -6,7 +6,7 @@ The mandatory M0-M8 vertical slice is implemented and has run both through the C
 
 ## CURRENT MILESTONE
 
-Stable handoff after the single-host full-match MVP and the browser uploader/results page. The short-clip M0-M8 showcase, durable multipart upload/control plane, restartable full-match runner, and the FastAPI-served `/full-match` browser flow (direct part transfer, chunk progress, OCR/heat-map/video results) are all implemented and verified. The next milestone is a real-broadcast OCR/detector evidence benchmark with a manual scoreboard ROI.
+Stable after the single-host full-match MVP, the browser uploader/results page, and event clips/timeline. The short-clip M0-M8 showcase, durable multipart upload/control plane, restartable full-match runner, the FastAPI-served `/full-match` browser flow, and per-event clip/thumbnail extraction with a live, click-to-seek timeline are all implemented and verified. The next milestone is a real-broadcast OCR/detector evidence benchmark with a manual scoreboard ROI.
 
 ## COMPLETED MILESTONES
 
@@ -24,10 +24,11 @@ Stable handoff after the single-host full-match MVP and the browser uploader/res
 - Full-match Task 3 multipart upload service and API, in-memory/filesystem/S3 adapters, and MinIO Compose runtime.
 - Full-match MVP single-host runner with atomic manifest/resume, 120-second/5-second-overlap bounded chunks, manual Tesseract OCR, 32x18 screen-space heat map, non-overlap H.264 finalization/audio mux, and run/status/scoreboard/heat-map APIs.
 - Browser multipart uploader and results page (`GET /full-match`): self-contained HTML/JS that computes the file SHA-256 in the browser, transfers 16 MiB parts directly to MinIO via presigned URLs, starts the full-match runner, polls chunk progress, and renders annotated video, event timeline, scoreboard OCR, and heat map without buffering in Streamlit.
+- Event clips and live timeline: synchronous 8-second H.264/AAC clip and PNG thumbnail extraction from the annotated video (`GET /jobs/{id}/events/{eid}/clip` and `/thumbnail`), plus auto-refreshing Streamlit progress and click-to-seek/clip event timelines in both the Streamlit and `/full-match` UIs.
 
 ## CURRENT WORK
 
-DeepSeek recovery session: merged the worktree `feat/full-match-production` branch into `main` (commit `99e713c`), re-verified the merged state, and implemented the browser uploader/results page with contract tests, Node-verified JS, MinIO CORS, and a live end-to-end flow check.
+DeepSeek recovery session: merged the worktree `feat/full-match-production` branch into `main` (commit `99e713c`), re-verified the merged state, implemented the browser uploader/results page, fixed the short-clip/PostgreSQL raw-track regression, and added event clips/timeline with live verification.
 
 ## LAST SUCCESSFUL COMMAND
 
@@ -39,7 +40,7 @@ Run a representative legal real broadcast through the single-host MVP with its m
 
 ## FILES MODIFIED
 
-Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Tasks 1-2 added full-match contracts, chunk planning, SQLAlchemy repositories/stage operations, migrations, and legacy import. Task 3 added focused object-store and upload modules, metadata-only multipart API routes, Boto3 S3 support, MinIO configuration, and upload service/API/adapter/integration tests while retaining the legacy short-clip upload path. The MVP runner added `fullmatch/{media,manifest,ocr,heatmap,runner,provenance}.py` plus full-match API seams. The browser page added `fullmatch/web.py`, the `GET /full-match` route, MinIO CORS in Compose, `tools/check_web_js.py`, `tools/live_fullmatch_check.py`, and `tests/fullmatch/test_web_page.py`.
+Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Tasks 1-2 added full-match contracts, chunk planning, SQLAlchemy repositories/stage operations, migrations, and legacy import. Task 3 added focused object-store and upload modules, metadata-only multipart API routes, Boto3 S3 support, MinIO configuration, and upload service/API/adapter/integration tests while retaining the legacy short-clip upload path. The MVP runner added `fullmatch/{media,manifest,ocr,heatmap,runner,provenance}.py` plus full-match API seams. The browser page added `fullmatch/web.py`, the `GET /full-match` route, MinIO CORS in Compose, `tools/check_web_js.py`, `tools/live_fullmatch_check.py`, and `tests/fullmatch/test_web_page.py`. The clip/timeline milestone added `clips.py`, per-event clip/thumbnail API routes, the live Streamlit fragment UI, the `/full-match` click-to-seek timeline and clip modal, and `tests/test_clips.py`.
 
 ## MODELS INSTALLED
 
@@ -77,6 +78,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 - Full-match MVP Fix Round 2 focused suite: 72 passed. Complete protected suite: 220 passed, two environment-gated skips, and the known Starlette warning. The rebuilt image repeated the generated two-chunk H.264+AAC/range integration, corrupted-media strict decode, and measured-provenance tests.
 - DeepSeek recovery session: merged worktree into `main`; full suite on merged `main`: 220 passed, 2 skips. After the browser page: full suite 231 passed, 5 skips (3 Node-required JS tests skip inside Docker); `python3 tools/check_web_js.py` passed all Node SHA-256/part-planner checks on the host; live Compose full-match browser flow passed end to end (130 s source, 2/2 chunks, OCR observation, PNG heat map, H.264+AAC faststart artifact); MinIO CORS preflight and signed PUT verified.
 - DeepSeek recovery session OCR evidence: a synthetic broadcast-style scoreboard source (`12:00 ARS 0 - 0 CHE` → `13:00 ARS 0 - 1 CHE`) produced 125 accepted OCR observations at 0.93-0.94 raw confidence and exactly one `score_change_candidate` at 65.0 s (0.938 confidence, source `ocr.tesseract.consensus`, monotonic clock 720 s → 780 s, `needs_review: true`). Real-broadcast accuracy remains unverified pending a licensed clip.
+- DeepSeek recovery session clip/timeline: full suite 238 passed, 5 skips; live clip endpoint returned an 8.000 s H.264/AAC MP4 and the thumbnail a valid PNG; Streamlit and `/full-match` timelines verified serving seek/clip controls.
 
 ## KNOWN FAILURES
 

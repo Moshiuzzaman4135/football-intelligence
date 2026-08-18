@@ -137,3 +137,11 @@ Fresh image checks:
 - Tesseract 5.5.0 read the crop cleanly: raw samples at 1 FPS were `12:00 ARS 0 - 0 CHE` (confidence 0.84-0.94) then `13:00 ARS 0 - 1 CHE` (0.92-0.94). The parser recovered clock, team tokens, and score; the consensus accepted 125 observations with monotonic clock (720 s → 780 s).
 - Exactly one `score_change_candidate` event was emitted at 65.0 s (score flip at 60 s plus the 5 s stability window): confidence 0.938, source `ocr.tesseract.consensus`, producer version 5.5.0, `score_transition: 0-0 -> 0-1`, frame refs 600-650, supporting reads retained in `original_model_output`, `needs_review: true`.
 - Honest boundary: this validates the OCR/consensus mechanics on a synthetic, high-contrast scoreboard. Real-broadcast accuracy (fonts, glare, logos, cropped clocks) is not yet measured; that remains the NEXT EXACT ACTION and needs a licensed broadcast clip.
+
+## Event clips, thumbnails, and live timeline — 2026-08-18 (DeepSeek recovery session)
+
+- Fixed a full-stack regression: the short-clip pipeline wrote raw track observations to the PostgreSQL repository, which rejects them (`raw track observations require an external artifact store`). Raw observations now persist beside the annotated video as `{job_id}.tracks.json`; only compact summaries enter SQL. Regression test: the pipeline completes over a SQLAlchemy repository and leaves `get_tracks()` empty.
+- New synchronous event media: `GET /jobs/{id}/events/{eid}/clip` returns an 8 s H.264/AAC faststart MP4 cut around the event start; `GET /jobs/{id}/events/{eid}/thumbnail` returns a 320 px PNG. Both cache under `data/clips`.
+- Live verification on the running stack: the kick-candidate clip returned 200 video/mp4 with exactly 8.000 s duration; the thumbnail returned 200 image/png with valid PNG magic. The `/full-match` page now serves the seek/clip timeline markup.
+- Streamlit showcase now auto-refreshes its live panel with `@st.fragment(run_every=...)` and stops refreshing once the job settles; each event expands to seek the annotated video to its start or play its clip.
+- Full protected suite: 238 passed, 5 environment-gated skips. Ruff, `git diff --check`, and `python3 tools/check_web_js.py` all clean.

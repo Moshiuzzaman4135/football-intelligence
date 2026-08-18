@@ -85,3 +85,11 @@ The full-match browser UX is one self-contained HTML/JS document served at `GET 
 ## 2026-08-18: live browser-flow verification is a repeatable tool
 
 `tools/live_fullmatch_check.py` performs the exact API calls the page makes against a running Compose stack, and `tools/check_web_js.py` verifies the embedded JavaScript on any host with Node. These keep the browser flow verifiable without a Selenium/browser dependency.
+
+## 2026-08-18: synchronous event clips before Celery
+
+Event clips and thumbnails are cut synchronously from the annotated video with FFmpeg and cached under `data/clips`, served by `GET /jobs/{id}/events/{eid}/clip` and `/thumbnail`. This mirrors the `vision-relay` `POST /events/clip` idea without adding Celery/Redis, and keeps a clip request self-contained and idempotent (cached, faststart H.264/AAC). Clip duration defaults to 8 s with 2 s of pre-roll; a slow source or a very long clip can be tuned later. Clips never enter SQL or the object store — they are derived, disposable artifacts of the annotated output.
+
+## 2026-08-18: live UI via fragment polling, not websockets
+
+Both UIs auto-refresh by polling the existing status/events endpoints: Streamlit uses `@st.fragment(run_every=...)` and stops refreshing once the job settles, and the browser page polls on a fixed interval. This avoids adding websocket/SSE infrastructure while remaining one simple change away if a later task needs push updates.
