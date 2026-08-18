@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import requests
 import streamlit as st
@@ -19,32 +20,13 @@ def format_evidence(evidence: dict) -> str:
     )
 
 
-def _refresh_interval() -> float | None:
-    """Auto-refresh the live panel every second while a job is still running.
-
-    Returning ``None`` stops the fragment auto-rerun once the job settles.
-    """
-    return 1 if st.session_state.get("_job_running", True) else None
+def _get_status(api_url: str, job_id: str) -> dict:
+    response = requests.get(f"{api_url}/jobs/{job_id}/status", timeout=10)
+    response.raise_for_status()
+    return response.json()
 
 
-@st.fragment(run_every=_refresh_interval)
-def render_live(api_url: str, job_id: str) -> None:
-    status = requests.get(f"{api_url}/jobs/{job_id}/status", timeout=10).json()
-    running = status["status"] in {"created", "running", "stopping"}
-    st.session_state["_job_running"] = running
-
-    st.progress(
-        status["progress"] / 100,
-        text=f"{status['status']} — {status['progress']}%",
-    )
-    if status.get("error"):
-        st.error(status["error"])
-    if running:
-        return
-    if status["status"] != "completed":
-        st.warning(f"Job ended with status: {status['status']}")
-        return
-
+def render_results(api_url: str, job_id: str, status: dict) -> None:
     left, right = st.columns([2, 1])
     with left:
         st.subheader("Annotated video")
@@ -79,8 +61,10 @@ def render_live(api_url: str, job_id: str) -> None:
                 seek_col, clip_col = st.columns(2)
                 if seek_col.button("▶ Seek video", key=f"seek_{event['id']}"):
                     st.session_state["seek_time"] = max(0.0, event["start_ms"] / 1000)
+                    st.rerun()
                 if clip_col.button("▶ Play clip", key=f"clip_{event['id']}"):
                     st.session_state["clip_event_id"] = event["id"]
+                    st.rerun()
                 if st.session_state.get("clip_event_id") == event["id"]:
                     clip_bytes = requests.get(
                         f"{api_url}/jobs/{job_id}/events/{event['id']}/clip",
@@ -122,7 +106,22 @@ def main() -> None:
         st.info("Upload a 30-120 second clip to begin.")
         return
 
-    render_live(api_url, job_id)
+    status = _get_status(api_url, job_id)
+    st.progress(
+        status["progress"] / 100,
+        text=f"{status['status']} — {status['progress']}%",
+    )
+    if status.get("error"):
+        st.error(status["error"])
+    if status["status"] in {"created", "running", "stopping"}:
+        time.sleep(1)
+        st.rerun()
+        return
+    if status["status"] != "completed":
+        st.warning(f"Job ended with status: {status['status']}")
+        return
+
+    render_results(api_url, job_id, status)
 
 
 if __name__ == "__main__":
