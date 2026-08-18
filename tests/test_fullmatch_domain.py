@@ -224,6 +224,12 @@ def test_football_event_round_trips_full_match_metadata_without_changing_legacy_
         "action.spotter": {"labels": ["goal"], "scores": [0.98]},
         "scoreboard.ocr": {"text": "Home FC 2-0 Away FC"},
     }
+    restored_event = FootballEvent.model_validate_json(event.model_dump_json())
+
+    assert restored_event.original_model_output == {
+        "action.spotter": {"labels": ["goal"], "scores": [0.98]},
+        "scoreboard.ocr": {"text": "Home FC 2-0 Away FC"},
+    }
 
 
 def test_event_review_rejects_a_candidate_decision():
