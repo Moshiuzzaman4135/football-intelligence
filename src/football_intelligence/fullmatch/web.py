@@ -188,6 +188,15 @@ def _app_js() -> str:
   var EP = JSON.parse(document.getElementById('fm-endpoints').textContent);
   var API = window.location.origin;
   var state = { jobId: null, uploadId: null, timer: null, running: false };
+  var SEMANTIC_EVENT_TYPES = [
+    'goal_candidate', 'score_change_candidate', 'penalty_candidate',
+    'foul_candidate', 'corner_candidate', 'yellow_card_candidate',
+    'red_card_candidate', 'offside_candidate', 'substitution_candidate',
+    'shot_on_target_candidate', 'shot_off_target_candidate',
+    'direct_free_kick_candidate', 'indirect_free_kick_candidate',
+    'throw_in_candidate', 'kick_off_candidate', 'clearance_candidate',
+    'ball_out_candidate'
+  ];
 
   function byId(id) { return document.getElementById(id); }
 
@@ -397,7 +406,11 @@ def _app_js() -> str:
 
   async function renderResults() {
     var eventsResponse = await callApi(apiPath(EP.events, { job_id: state.jobId }), {});
-    var events = await eventsResponse.json();
+    var allEvents = await eventsResponse.json();
+    var showDebug = byId('debug-events-toggle') ? byId('debug-events-toggle').checked : false;
+    var events = showDebug ? allEvents : allEvents.filter(function (event) {
+      return SEMANTIC_EVENT_TYPES.indexOf(event.event_type) >= 0;
+    });
     var rows = '';
     for (var i = 0; i < events.length; i++) {
       var event = events[i];
@@ -657,6 +670,7 @@ _PAGE_TEMPLATE = """<!doctype html>
   </div>
   <div class="card hidden" id="events-panel">
     <h3>Event timeline (click a row to seek the video)</h3>
+    <label class="mini-label"><input type="checkbox" id="debug-events-toggle" onchange="renderResults()"> show low-level debug events (kick spam)</label>
     <table>
       <thead><tr><th>Frame</th><th>Time</th><th>Type</th><th>Confidence</th><th>Review</th><th>Source</th><th>Evidence</th><th>Actions</th></tr></thead>
       <tbody id="events-body"></tbody>

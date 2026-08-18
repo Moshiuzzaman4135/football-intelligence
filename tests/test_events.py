@@ -239,3 +239,65 @@ def test_heuristic_kick_confidence_is_capped():
 
     assert events
     assert all(event.confidence <= 0.70 for event in events)
+
+
+def make_semantic(
+    event_type: str, start_ms: int, confidence: float, source: str, id: str = None
+) -> FootballEvent:
+    return FootballEvent(
+        job_id="job-1",
+        event_type=event_type,
+        start_ms=start_ms,
+        end_ms=start_ms + 500,
+        description=f"{event_type} detected",
+        confidence=confidence,
+        evidence=[EventEvidence(kind="action_spot", value=event_type, confidence=confidence)],
+        source=[source],
+        frame_refs=[start_ms // 500],
+        id=id or f"evt-{event_type}-{start_ms}",
+    )
+
+
+def test_fusion_goal_plus_score_change_is_strong_goal():
+    from football_intelligence.events import fuse_semantic_events
+
+    goal = make_semantic("goal_candidate", 65_000, 0.8, "action.calf")
+    score = make_semantic("score_change_candidate", 65_500, 0.9, "ocr.tesseract.consensus")
+    fused = fuse_semantic_events([goal, score])
+    goals = [event for event in fused if event.event_type == "goal_candidate"]
+    assert len(goals) == 1
+    assert goals[0].needs_review is False
+    assert goals[0].confidence > 0.8
+    assert "action.calf" in goals[0].source and "ocr.tesseract.consensus" in goals[0].source
+
+
+def test_fusion_goal_only_stays_reviewable():
+    from football_intelligence.events import fuse_semantic_events
+
+    goal = make_semantic("goal_candidate", 65_000, 0.8, "action.calf")
+    fused = fuse_semantic_events([goal])
+    assert len(fused) == 1
+    assert fused[0].event_type == "goal_candidate"
+    assert fused[0].needs_review is True
+
+
+def test_fusion_score_change_only_stays_score_change():
+    from football_intelligence.events import fuse_semantic_events
+
+    score = make_semantic("score_change_candidate", 65_000, 0.9, "ocr.tesseract.consensus")
+    fused = fuse_semantic_events([score])
+    assert len(fused) == 1
+    assert fused[0].event_type == "score_change_candidate"
+    assert fused[0].needs_review is True
+
+
+def test_semantic_timeline_hides_kick_spam_keeps_semantic():
+    from football_intelligence.events import debug_events, semantic_events
+
+    kick = make_semantic("kick_candidate", 1_000, 0.7, "heuristic.temporal")
+    goal = make_semantic("goal_candidate", 2_000, 0.8, "action.calf")
+    events = [kick, goal]
+    semantic = semantic_events(events)
+    debug = debug_events(events)
+    assert [event.event_type for event in semantic] == ["goal_candidate"]
+    assert [event.event_type for event in debug] == ["kick_candidate"]

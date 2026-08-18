@@ -71,3 +71,18 @@ Remote commands will be documented here without credentials. The application run
 ## Verified Tesseract packaging
 
 The CPU image installs Tesseract 5.5.0 and downloads `eng.traineddata` from pinned `tessdata_fast` commit `87416418657359cb625c412a48b6e1d6d41c29bd`. The build verifies SHA-256 `7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2` and installs the upstream Apache-2.0 license at `/usr/share/doc/tessdata-fast/LICENSE`. A real container test read a generated manual scoreboard crop through the CLI/TSV adapter. This proves packaging and evidence plumbing, not broadcaster-specific OCR accuracy.
+
+## CALF action spotting — qualified 2026-08-18
+
+- Source: `https://github.com/SoccerNet/sn-spotting/tree/main/Benchmarks/CALF` (Apache-2.0). README states "License Apache v2.0"; LICENSE file confirms.
+- Weights: `Benchmarks/CALF/models/CALF_benchmark/model.pth.tar` (6,966,034 bytes). SHA-256 `6a9befb8f30741da53756f89d2df675783ef8fc893457d1a920c1ed900399b4e`. Checkpoint keys: `epoch` (181), `state_dict` (27 tensors), `best_loss`, `optimizer`. 578,245 trainable parameters.
+- Taxonomy: the 17 SoccerNet-v2 actions (Penalty, Kick-off, Goal, Substitution, Offside, Shots on/off target, Clearance, Ball out of play, Throw-in, Foul, Indirect/Direct free-kick, Corner, Yellow/Red/Yellow->red card).
+- Architecture: `ContextAwareModel` (TemporalConv + capsule segmentation + spotting heads). Consumes precomputed SoccerNet features `(1,1,chunk_frames,512)` at 2 fps; produces segmentation `(1,240,17)` and spotting `(1,15,19)` = 15 detections x `[object_conf, normalized_frame_pos, ...17 class scores]`.
+- Qualification (isolated, torch only, CPU in the vllm/OCR dev image):
+  - weights load: OK (`strict=True`).
+  - forward on a real-weight model: OK in 0.055 s for one 240-frame chunk (CPU).
+  - decode: timestamps via `floor(frame_pos*(chunk_len-1))` -> `frame_index*500 ms`; per-class NMS over a 20 s window; unknown classes dropped.
+  - end-to-end adapter on 480 random 512-d feature frames produced 19 normalized spots (e.g. `ball_out_candidate` 41.0 s, `throw_in_candidate` 46.5 s, `ball_out_candidate` 80.0 s) that normalize into `FootballEvent` with `needs_review=True`, source `action.calf`.
+- Integration: `football_intelligence.action` defines the replaceable `ActionSpotter` protocol + normalized `ActionSpot`, the `CalfActionSpotter` adapter (lazy `torch` import, isolated from core deps), `action_spots_from_features` decode, and `normalize_action` -> `FootballEvent`. `action_calf_model.py` is a self-contained Apache-2.0 port of the CALF model.
+- Honest boundary: raw-video feature extraction needs the legacy SoccerNet/ResNet-TF2 + PCA stack, which is intentionally NOT installed into the core image. `CalfActionSpotter.spot` accepts a precomputed `(frames, 512)` feature array at 2 fps; the isolated ResNet/PCA feature extractor is the remaining deployment step for arbitrary video. Real broadcast spotting accuracy was not benchmarked because a licensed broadcast match with these features is unavailable this session.
+- Runtime: single 240-frame chunk forward 0.055 s CPU (torch 2.11 in dev image). Full-match feature extraction dominates wall-clock; not measured because the feature stack is not installed.

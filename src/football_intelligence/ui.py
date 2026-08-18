@@ -49,6 +49,9 @@ def render_results(api_url: str, job_id: str, status: dict) -> None:
     with right:
         st.subheader("Event timeline (click a row to seek / play a clip)")
         events = requests.get(f"{api_url}/jobs/{job_id}/events", timeout=10).json()
+        from football_intelligence.events import SEMANTIC_EVENT_TYPES
+
+        events = [event for event in events if event["event_type"] in SEMANTIC_EVENT_TYPES]
         if not events:
             st.info("No temporal candidates crossed the configured thresholds.")
         for event in events:

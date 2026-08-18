@@ -777,6 +777,16 @@ class FullMatchRunner:
                                 timestamp_ms=timestamp_ms,
                                 frame_index=frame_index,
                                 region=self.options.scoreboard_region,
+                                known_teams=(
+                                    self._consensus.known_teams()
+                                    if self._consensus is not None
+                                    else None
+                                ),
+                                known_clock_ms=(
+                                    self._consensus.known_clock_ms()
+                                    if self._consensus is not None
+                                    else None
+                                ),
                             )
                             if parsed is not None and self._consensus is not None:
                                 accepted, score_event = self._consensus.observe(parsed)

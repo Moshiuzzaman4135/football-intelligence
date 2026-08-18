@@ -115,3 +115,15 @@ IoU tracks now carry `tentative`/`confirmed` presentation state (`confirm_min_hi
 ## 2026-08-18: kick as a contact->release state machine
 
 The kick detector is no longer a bare speed threshold. A `kick_candidate` requires a valid same-track ball across frames, a minimum number of near-player contact frames, separation (distance increasing), inter-frame speed above threshold, and a cooldown. Heuristic-only confidence is capped (default 0.70) and earned from continuity/contact/speed rather than inflating toward 95%. Extreme scene/camera transitions (single-frame ball jump) suppress emission.
+
+## 2026-08-18: tolerant scoreboard consensus and best-effort parser
+
+The real broadcast failure (score changed, no event) traced to three strict behaviours: the configured ROI can read ads instead of a real scoreboard; the parser rejected any read lacking a clock AND both team tokens; and a single missed read reset the developing change. The consensus now uses a bounded rolling window: up to `max_consecutive_misses` missed reads are tolerated before a developing change is abandoned, teams are learned once and carried (an `unknown` placeholder is refined when a real token appears), and the clock is best-effort (falls back to the last known clock or the video timestamp). A stable valid increase emits exactly one `score_change_candidate` with `needs_review=true`; score regression is rejected. OCR alone never confirms a goal.
+
+## 2026-08-18: ActionSpotter as the replaceable action-model seam
+
+CALF is the primary broad action-spotting model, integrated behind the `ActionSpotter` protocol so the pipeline never depends on a single producer. A normalized `ActionSpot` carries event type, ms range, confidence, raw label/score, and producer provenance; `normalize_action` maps it to the existing `FootballEvent` with `needs_review=true`. `torch` and the CALF model port are lazily imported/isolated from the core package; raw-video feature extraction remains a separate optional deployment step. Fusion is evidence-based: CALF `goal_candidate` + stable OCR score change => a single strong `goal_candidate` (needs_review=false), each alone stays a reviewable candidate. Low-level kick spam stays in debug data and is hidden from the default semantic timeline.
+
+## 2026-08-18: semantic default timeline with a debug escape hatch
+
+The default event timeline (Streamlit and `/full-match`) shows only semantic event types (goal, shot, foul, corner, cards, offside, substitution, throw-in, restarts, score change). Low-level `kick_candidate` spam and other debug evidence are still computed, stored, and retrievable, but hidden by default; the browser page adds a "show low-level debug events" toggle. This keeps the UI meaningful without discarding the raw evidence.

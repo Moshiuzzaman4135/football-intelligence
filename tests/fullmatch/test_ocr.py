@@ -142,7 +142,7 @@ def test_fake_ocr_engine_is_deterministic_and_bounded_to_supplied_results():
     assert engine.read(None, REGION) == OcrResult(text="", confidence=0)
 
 
-def test_missing_read_clears_pending_score_change_and_requires_new_consecutive_window():
+def test_bounded_missed_read_does_not_reset_developing_score_change():
     parser = ScoreboardParser()
     consensus = ScoreboardConsensus(job_id="job-1", stable_score_ms=5_000)
 
@@ -157,17 +157,56 @@ def test_missing_read_clears_pending_score_change_and_requires_new_consecutive_w
         return parsed
 
     consensus.observe(parse("0-0", 0))
+    # Pending window starts at t=1 s (score 1-0).
     for timestamp_ms in (1_000, 2_000, 3_000):
         consensus.observe(parse("1-0", timestamp_ms))
+    # Misses at 4 s and 5 s are tolerated (must NOT reset the window).
     consensus.observe_missing(4_000)
+    consensus.observe_missing(5_000)
+    accepted, event = consensus.observe(parse("1-0", 6_000))
+
+    # The window spans 1s..6s = 5s despite the two misses, so it emits here.
+    # (A strict reset would have restarted the window at 6s and needed ~11s.)
+    assert accepted is not None
+    assert event is not None
+    assert [item["timestamp_ms"] for item in event.original_model_output["supporting_reads"]] == [
+        1_000,
+        2_000,
+        3_000,
+        6_000,
+    ]
+
+
+def test_too_many_consecutive_misses_abandon_pending_change():
+    parser = ScoreboardParser()
+    consensus = ScoreboardConsensus(
+        job_id="job-1", stable_score_ms=5_000, max_consecutive_misses=2
+    )
+
+    def parse(score: str, timestamp_ms: int):
+        parsed = parser.parse(
+            OcrResult(text=f"AAA {score} BBB 10:{timestamp_ms // 1000:02d}", confidence=0.9),
+            timestamp_ms=timestamp_ms,
+            frame_index=timestamp_ms // 40,
+            region=REGION,
+        )
+        assert parsed is not None
+        return parsed
+
+    consensus.observe(parse("0-0", 0))
+    consensus.observe(parse("1-0", 1_000))
+    # Three consecutive misses with max_consecutive_misses=2 abandon pending.
+    consensus.observe_missing(2_000)
+    consensus.observe_missing(3_000)
+    consensus.observe_missing(4_000)
+    # A fresh 1-0 must re-establish a new window before it can be accepted.
     for timestamp_ms in (5_000, 6_000, 7_000, 8_000, 9_000):
         accepted, event = consensus.observe(parse("1-0", timestamp_ms))
         assert accepted is None and event is None
 
     accepted, event = consensus.observe(parse("1-0", 10_000))
-
-    assert accepted is not None
     assert event is not None
+    # Supporting reads start fresh after the abandonment.
     assert [item["timestamp_ms"] for item in event.original_model_output["supporting_reads"]] == [
         5_000,
         6_000,
@@ -176,6 +215,67 @@ def test_missing_read_clears_pending_score_change_and_requires_new_consecutive_w
         9_000,
         10_000,
     ]
+
+
+def test_team_token_miss_keeps_known_teams_and_still_accepts_score_change():
+    parser = ScoreboardParser()
+    consensus = ScoreboardConsensus(job_id="job-1", stable_score_ms=5_000)
+
+    def parse(text: str, timestamp_ms: int):
+        parsed = parser.parse(
+            OcrResult(text=text, confidence=0.9),
+            timestamp_ms=timestamp_ms,
+            frame_index=timestamp_ms // 40,
+            region=REGION,
+            known_teams=consensus.known_teams(),
+        )
+        assert parsed is not None
+        return parsed
+
+    initial = parser.parse(
+        OcrResult(text="AAA 0-0 BBB 10:00", confidence=0.9),
+        timestamp_ms=0,
+        frame_index=0,
+        region=REGION,
+    )
+    assert initial is not None
+    accepted, _ = consensus.observe(initial)
+    assert accepted is not None
+    assert consensus.known_teams() == ("AAA", "BBB")
+
+    # A read that misses the far team token still yields a usable reading.
+    for second in range(1, 6):
+        text = f"AAA 1-0 10:{second:02d}" if second % 2 == 0 else f"1-0 BBB 10:{second:02d}"
+        reading = parse(text, second * 1_000)
+        consensus.observe(reading)
+
+    _, event = consensus.observe(parse("AAA 1-0 BBB 10:06", 6_000))
+
+    assert event is not None
+    assert event.score_transition == "0-0 -> 1-0"
+    assert event.original_model_output["supporting_reads"]
+
+
+def test_score_regression_is_rejected_and_does_not_emit():
+    parser = ScoreboardParser()
+    consensus = ScoreboardConsensus(job_id="job-1", stable_score_ms=5_000)
+    initial = parser.parse(
+        OcrResult(text="AAA 1-0 BBB 10:00", confidence=0.9),
+        timestamp_ms=0,
+        frame_index=0,
+        region=REGION,
+    )
+    assert initial is not None
+    consensus.observe(initial)
+    regression = parser.parse(
+        OcrResult(text="AAA 0-0 BBB 10:01", confidence=0.9),
+        timestamp_ms=1_000,
+        frame_index=25,
+        region=REGION,
+    )
+    assert regression is not None
+    accepted, event = consensus.observe(regression)
+    assert accepted is None and event is None
 
 
 def test_consensus_state_round_trip_preserves_pending_window_and_producer():

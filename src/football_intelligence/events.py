@@ -18,6 +18,128 @@ from math import dist, prod
 
 from football_intelligence.domain import EventEvidence, FootballEvent, TrackObservation
 
+# Semantic events shown in the default timeline. Low-level heuristic/debug
+# evidence (kick spam, track updates, raw OCR) is excluded from the default view
+# but preserved as evidence/debug data.
+SEMANTIC_EVENT_TYPES = frozenset(
+    {
+        "goal_candidate",
+        "score_change_candidate",
+        "penalty_candidate",
+        "foul_candidate",
+        "corner_candidate",
+        "yellow_card_candidate",
+        "red_card_candidate",
+        "offside_candidate",
+        "substitution_candidate",
+        "shot_on_target_candidate",
+        "shot_off_target_candidate",
+        "direct_free_kick_candidate",
+        "indirect_free_kick_candidate",
+        "throw_in_candidate",
+        "kick_off_candidate",
+        "clearance_candidate",
+        "ball_out_candidate",
+    }
+)
+
+
+def semantic_events(
+    events: list[FootballEvent],
+) -> list[FootballEvent]:
+    """Return only the events suitable for the default semantic timeline."""
+    return [event for event in events if event.event_type in SEMANTIC_EVENT_TYPES]
+
+
+def debug_events(events: list[FootballEvent]) -> list[FootballEvent]:
+    """Return low-level evidence events (kick spam, etc.) for debug views."""
+    return [event for event in events if event.event_type not in SEMANTIC_EVENT_TYPES]
+
+
+def fuse_semantic_events(
+    events: list[FootballEvent], window_ms: int = 10_000
+) -> list[FootballEvent]:
+    """Fuse independent evidence into one semantic event where possible.
+
+    Rules:
+    * A CALF ``goal_candidate`` plus a nearby stable OCR ``score_change_candidate``
+      fuses into a strong ``goal_candidate`` carrying both evidence sources.
+    * A ``goal_candidate`` with no score-change support stays a reviewable
+      ``goal_candidate`` (needs_review stays true).
+    * A ``score_change_candidate`` with no action-model support stays a reviewable
+      ``score_change_candidate``.
+    * All other event types are passed through unchanged (already deduplicated).
+
+    Duplicates/replays of the same type are not deleted; each independent
+    evidence source is preserved and their confidences are combined via noisy-or.
+    """
+    goal_actions = [
+        event for event in events if event.event_type == "goal_candidate"
+    ]
+    score_changes = [
+        event for event in events
+        if event.event_type == "score_change_candidate"
+    ]
+    fused_goals: list[FootballEvent] = []
+    for goal in sorted(goal_actions, key=lambda item: item.start_ms):
+        support = next(
+            (
+                change
+                for change in sorted(
+                    score_changes, key=lambda item: item.start_ms
+                )
+                if abs(change.start_ms - goal.start_ms) <= window_ms
+            ),
+            None,
+        )
+        if support is None:
+            # No OCR support: remains a reviewable goal candidate.
+            fused_goals.append(goal)
+            continue
+        combined_confidence = 1 - (1 - goal.confidence) * (1 - support.confidence)
+        fused_goals.append(
+            FootballEvent(
+                id=goal.id,
+                job_id=goal.job_id,
+                event_type="goal_candidate",
+                start_ms=min(goal.start_ms, support.start_ms),
+                end_ms=max(goal.end_ms, support.end_ms),
+                game_time=goal.game_time,
+                team=goal.team,
+                player=goal.player,
+                description="Goal action spotted and scoreboard confirmed a score change",
+                confidence=round(min(1.0, combined_confidence), 4),
+                evidence=[*goal.evidence, *support.evidence],
+                source=sorted(
+                    {source for event in (goal, support) for source in event.source}
+                ),
+                track_ids=goal.track_ids,
+                frame_refs=sorted(
+                    {frame for event in (goal, support) for frame in event.frame_refs}
+                ),
+                needs_review=False,  # two independent sources agree
+                status=goal.status,
+                period=goal.period,
+                match_clock_ms=goal.match_clock_ms,
+                score_transition=support.score_transition,
+                producer_version=goal.producer_version,
+                review=goal.review,
+                original_model_output={
+                    "fused_sources": [
+                        source for event in (goal, support) for source in event.source
+                    ],
+                    "score_transition": support.score_transition,
+                },
+            )
+        )
+    fused_ids = {event.id for event in fused_goals}
+    others = [
+        event for event in events
+        if event.id not in fused_ids and event.event_type != "goal_candidate"
+    ]
+    return sorted([*fused_goals, *others], key=lambda item: item.start_ms)
+
+
 
 def deduplicate_events(events: list[FootballEvent], window_ms: int = 1000) -> list[FootballEvent]:
     kept: list[FootballEvent] = []

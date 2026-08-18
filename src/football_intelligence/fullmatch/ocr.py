@@ -156,31 +156,56 @@ class ScoreboardParser:
         timestamp_ms: int,
         frame_index: int,
         region: ScoreboardRegion,
+        known_teams: tuple[str, str] | None = None,
+        known_clock_ms: int | None = None,
     ) -> ParsedScoreboard | None:
         clock = self._clock.search(result.text)
-        if clock is None:
-            return None
         scores = [
             match
             for match in self._score.finditer(result.text)
-            if match.span() != clock.span()
+            if clock is None or match.span() != clock.span()
         ]
         if not scores:
             return None
         score = scores[0]
+        # A clock is best-effort: some real scoreboards render it unreadably or
+        # not at all. The consensus carries the last known clock so a score/team
+        # read still yields a usable reading; otherwise the video timestamp is a
+        # monotonic fallback clock.
+        if clock is not None:
+            match_clock_ms = (
+                int(clock.group("minutes")) * 60 + int(clock.group("seconds"))
+            ) * 1_000
+        elif known_clock_ms is not None:
+            match_clock_ms = known_clock_ms
+        else:
+            match_clock_ms = timestamp_ms
         prefix_words = re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", result.text[: score.start()])
         suffix_words = re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", result.text[score.end() :])
-        if not prefix_words or not suffix_words:
-            return None
+        # Team tokens are best-effort. Once teams are already known they are
+        # carried by the consensus, so a single read that misses the team
+        # tokens (or the far team) still yields a usable score/clock reading.
+        home_team = prefix_words[-1] if prefix_words else None
+        away_team = suffix_words[0] if suffix_words else None
+        if home_team is None or away_team is None:
+            if known_teams is not None:
+                home_team = home_team or known_teams[0]
+                away_team = away_team or known_teams[1]
+            elif home_team is None and away_team is None:
+                return None
+            else:
+                # Seed from a single readable token; the missing side starts as
+                # an unknown placeholder that the consensus refines later.
+                if home_team is None:
+                    home_team = "unknown"
+                if away_team is None:
+                    away_team = "unknown"
         return ParsedScoreboard(
             timestamp_ms=timestamp_ms,
-            match_clock_ms=(
-                int(clock.group("minutes")) * 60 + int(clock.group("seconds"))
-            )
-            * 1_000,
+            match_clock_ms=match_clock_ms,
             period=1,
-            home_team=prefix_words[-1],
-            away_team=suffix_words[0],
+            home_team=home_team,
+            away_team=away_team,
             home_score=int(score.group("home")),
             away_score=int(score.group("away")),
             confidence=result.confidence,
@@ -192,7 +217,15 @@ class ScoreboardParser:
 
 
 class ScoreboardConsensus:
-    """Monotonic clock and five-second score consensus for candidate events."""
+    """Monotonic clock and bounded rolling score consensus for candidates.
+
+    Team names are learned once and then carried by the consensus, so a single
+    read that misses the team tokens (or the far team) still yields a usable
+    score/clock reading. A bounded number of consecutive missed OCR reads does
+    not reset a developing score change; only a sustained loss of the candidate
+    score abandons it. A stable valid score increase emits exactly one
+    ``score_change_candidate`` with ``needs_review=True``.
+    """
 
     def __init__(
         self,
@@ -202,55 +235,98 @@ class ScoreboardConsensus:
         producer: str = "ocr.tesseract",
         producer_version: str = "unknown",
         state: ConsensusState | None = None,
+        max_pending_gap_ms: int = 3_000,
+        max_consecutive_misses: int = 3,
     ) -> None:
         self._job_id = job_id
         self._stable_score_ms = stable_score_ms
+        self._max_pending_gap_ms = max_pending_gap_ms
+        self._max_consecutive_misses = max_consecutive_misses
         self._producer = producer
         self._producer_version = producer_version
         self._period = 1
+        self._home_team: str | None = None
+        self._away_team: str | None = None
         self._last_clock_ms: int | None = None
         self._accepted_score: tuple[int, int] | None = None
         self._pending_score: tuple[int, int] | None = None
         self._pending_since_ms: int | None = None
         self._pending_last_ms: int | None = None
         self._pending_reads: list[ParsedScoreboard] = []
+        self._pending_misses = 0
         if state is not None:
             self._period = state.period
             self._last_clock_ms = state.last_clock_ms
+            self._home_team = state.home_team
+            self._away_team = state.away_team
             self._accepted_score = state.accepted_score
             self._pending_score = state.pending_score
             self._pending_since_ms = state.pending_since_ms
             self._pending_last_ms = state.pending_last_ms
             self._pending_reads = list(state.pending_reads)
+            self._pending_misses = state.pending_misses
+
+    def known_teams(self) -> tuple[str, str] | None:
+        """Return the current best-known team tokens, if any are known."""
+        if self._home_team is None or self._away_team is None:
+            return None
+        return (self._home_team, self._away_team)
+
+    def known_clock_ms(self) -> int | None:
+        """Return the last accepted match clock in ms, if any."""
+        return self._last_clock_ms
 
     def seed(self, observation: ScoreboardObservation) -> None:
         """Restore accepted state from a durable completed-chunk observation."""
         self._period = observation.period
         self._last_clock_ms = observation.match_clock_ms
+        self._home_team = observation.home_team
+        self._away_team = observation.away_team
         self._accepted_score = (observation.home_score, observation.away_score)
-        self._pending_score = None
-        self._pending_since_ms = None
-        self._pending_last_ms = None
-        self._pending_reads = []
+        self._clear_pending()
 
     def snapshot(self) -> ConsensusState:
         return ConsensusState(
             period=self._period,
             last_clock_ms=self._last_clock_ms,
+            home_team=self._home_team,
+            away_team=self._away_team,
             accepted_score=self._accepted_score,
             pending_score=self._pending_score,
             pending_since_ms=self._pending_since_ms,
             pending_last_ms=self._pending_last_ms,
             pending_reads=self._pending_reads,
+            pending_misses=self._pending_misses,
         )
 
     def observe_missing(self, timestamp_ms: int) -> None:
-        del timestamp_ms
-        self._clear_pending()
+        """Record a missed OCR read without resetting a developing change.
+
+        A bounded number of consecutive misses is tolerated; only after the
+        candidate score has been unseen for too long do we abandon it. If no
+        change is pending there is nothing to clear.
+        """
+        if self._pending_score is None:
+            return
+        self._pending_misses += 1
+        self._pending_last_ms = timestamp_ms
+        if self._pending_misses > self._max_consecutive_misses:
+            self._clear_pending()
 
     def observe(
         self, parsed: ParsedScoreboard
     ) -> tuple[ScoreboardObservation | None, FootballEvent | None]:
+        # Learn team tokens once; thereafter carry them so a read that misses
+        # the team OCR still counts toward the score/clock consensus. A real
+        # token replaces an "unknown" placeholder as soon as it is readable.
+        if self._home_team is None or (
+            self._home_team == "unknown" and parsed.home_team != "unknown"
+        ):
+            self._home_team = parsed.home_team
+        if self._away_team is None or (
+            self._away_team == "unknown" and parsed.away_team != "unknown"
+        ):
+            self._away_team = parsed.away_team
         if self._last_clock_ms is not None and parsed.match_clock_ms < self._last_clock_ms:
             halftime_reset = (
                 self._last_clock_ms >= 40 * 60 * 1_000
@@ -261,7 +337,13 @@ class ScoreboardConsensus:
                 return None, None
             self._period += 1
         self._last_clock_ms = parsed.match_clock_ms
-        reading = parsed.model_copy(update={"period": self._period})
+        reading = parsed.model_copy(
+            update={
+                "period": self._period,
+                "home_team": self._home_team,
+                "away_team": self._away_team,
+            }
+        )
         score = (reading.home_score, reading.away_score)
         if self._accepted_score is None:
             self._accepted_score = score
@@ -273,16 +355,18 @@ class ScoreboardConsensus:
             return None, None
         if (
             score != self._pending_score
-            or self._pending_last_ms is None
-            or reading.timestamp_ms - self._pending_last_ms > 1_500
+            or self._pending_since_ms is None
+            or reading.timestamp_ms - self._pending_last_ms > self._max_pending_gap_ms
         ):
             self._pending_score = score
             self._pending_since_ms = reading.timestamp_ms
             self._pending_last_ms = reading.timestamp_ms
             self._pending_reads = [reading]
+            self._pending_misses = 0
             return None, None
         self._pending_last_ms = reading.timestamp_ms
         self._pending_reads.append(reading)
+        self._pending_misses = 0
         assert self._pending_since_ms is not None
         if reading.timestamp_ms - self._pending_since_ms < self._stable_score_ms:
             return None, None
@@ -340,6 +424,7 @@ class ScoreboardConsensus:
         self._pending_since_ms = None
         self._pending_last_ms = None
         self._pending_reads = []
+        self._pending_misses = 0
 
     @staticmethod
     def _public(reading: ParsedScoreboard) -> ScoreboardObservation:
@@ -351,8 +436,11 @@ class ScoreboardConsensus:
 class ConsensusState(BaseModel):
     period: int = Field(default=1, ge=1)
     last_clock_ms: int | None = Field(default=None, ge=0)
+    home_team: str | None = None
+    away_team: str | None = None
     accepted_score: tuple[int, int] | None = None
     pending_score: tuple[int, int] | None = None
     pending_since_ms: int | None = Field(default=None, ge=0)
     pending_last_ms: int | None = Field(default=None, ge=0)
     pending_reads: list[ParsedScoreboard] = Field(default_factory=list)
+    pending_misses: int = Field(default=0, ge=0)
