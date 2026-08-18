@@ -26,6 +26,7 @@ from football_intelligence.domain import (
     UploadSession,
 )
 from football_intelligence.fullmatch.manifest import RunnerOptions
+from football_intelligence.fullmatch.media import parse_same_bucket_uri
 from football_intelligence.fullmatch.ocr import TesseractCliOcrEngine
 from football_intelligence.fullmatch.runner import FullMatchRunner
 from football_intelligence.fullmatch.web import PAGE_PATH, page_html
@@ -529,6 +530,21 @@ def create_app(
         except (OSError, ValueError):
             return False
 
+    def _delete_source_object(source_uri: str) -> None:
+        if runtime_object_store is None:
+            return
+        try:
+            key = parse_same_bucket_uri(source_uri, runtime_settings.s3_bucket)
+        except ValueError:
+            _LOGGER.warning(
+                "skipping object delete for non-configured source %s", source_uri
+            )
+            return
+        try:
+            runtime_object_store.delete_object(key)
+        except Exception:
+            _LOGGER.exception("failed to delete source object %s", source_uri)
+
     @application.delete("/jobs/{job_id}", status_code=204)
     def delete_job(job_id: str) -> Response:
         job = get_job(job_id)
@@ -545,7 +561,9 @@ def create_app(
         workspace = root / "fullmatch" / job_id
         if workspace.is_dir():
             shutil.rmtree(workspace, ignore_errors=True)
-        if _is_app_managed_source(job.source_path):
+        if job.source_path.startswith("s3://"):
+            _delete_source_object(job.source_path)
+        elif _is_app_managed_source(job.source_path):
             Path(job.source_path).unlink(missing_ok=True)
         repository.delete(job_id)
         return Response(status_code=204)

@@ -20,6 +20,7 @@ from football_intelligence.persistence import (
     create_schema,
 )
 from football_intelligence.pipeline import Pipeline
+from football_intelligence.settings import Settings
 from football_intelligence.storage import JobNotFound, JobRepository
 from football_intelligence.tracking.iou import IoUTracker
 
@@ -138,3 +139,23 @@ def test_api_delete_keeps_external_source_file(tmp_path):
 
     assert response.status_code == 204
     assert source.is_file(), "external source files must never be deleted"
+
+
+def test_api_delete_removes_s3_source_object(tmp_path):
+    settings = Settings(object_store_backend="filesystem")
+    repository = JobRepository(tmp_path / "jobs.db")
+    job = repository.create(
+        "s3://football-media/uploads/test/source.mp4", "match.mp4"
+    )
+    object_file = (
+        tmp_path / "object-store" / "objects" / "uploads" / "test" / "source.mp4"
+    )
+    object_file.parent.mkdir(parents=True)
+    object_file.write_bytes(b"uploaded-video-bytes")
+    app = create_app(repository=repository, data_root=tmp_path, settings=settings)
+
+    with TestClient(app) as client:
+        response = client.delete(f"/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert not object_file.exists(), "full-match source object must be deleted"
