@@ -14,8 +14,11 @@ def plan_chunks(
     if overlap_ms < 0 or overlap_ms >= chunk_ms:
         raise ValueError("overlap_ms must be non-negative and less than chunk_ms")
 
-    stride_ms = chunk_ms - overlap_ms
-    return [
-        (start_ms, min(start_ms + chunk_ms, duration_ms))
-        for start_ms in range(0, duration_ms, stride_ms)
-    ]
+    chunks: list[tuple[int, int]] = []
+    start_ms = 0
+    while True:
+        end_ms = min(start_ms + chunk_ms, duration_ms)
+        chunks.append((start_ms, end_ms))
+        if end_ms == duration_ms:
+            return chunks
+        start_ms = end_ms - overlap_ms

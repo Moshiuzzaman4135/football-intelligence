@@ -10,13 +10,16 @@ from football_intelligence.domain import (
     EventReview,
     EventStatus,
     FootballEvent,
+    FullMatchVideoMetadata,
     JobStage,
     ModelManifest,
+    ProxyVideoMetadata,
     ScoreboardObservation,
     ScoreboardRegion,
     StageName,
     StageStatus,
     UploadSession,
+    VideoMetadata,
 )
 
 
@@ -204,6 +207,10 @@ def test_football_event_round_trips_full_match_metadata_without_changing_legacy_
         score_transition="1-0 to 2-0",
         producer_version="soccer-calf@1.0.0",
         review=review,
+        original_model_output={
+            "action.spotter": {"labels": ["goal"], "scores": [0.98]},
+            "scoreboard.ocr": {"text": "Home FC 2-0 Away FC"},
+        },
     )
 
     assert event.model_dump()["event_type"] == "goal"
@@ -213,3 +220,94 @@ def test_football_event_round_trips_full_match_metadata_without_changing_legacy_
     assert event.score_transition == "1-0 to 2-0"
     assert event.producer_version == "soccer-calf@1.0.0"
     assert event.review == review
+    assert event.original_model_output == {
+        "action.spotter": {"labels": ["goal"], "scores": [0.98]},
+        "scoreboard.ocr": {"text": "Home FC 2-0 Away FC"},
+    }
+
+
+def test_event_review_rejects_a_candidate_decision():
+    with pytest.raises(ValidationError):
+        EventReview(
+            event_id="event-1",
+            reviewer_id="operator-1",
+            decision=EventStatus.CANDIDATE,
+            note="Needs more evidence.",
+            reviewed_at=datetime(2026, 8, 18, 12, 30, tzinfo=UTC),
+        )
+
+
+def test_full_match_input_metadata_accepts_the_150_minute_boundary():
+    metadata = FullMatchVideoMetadata(
+        source_path="/matches/final.mp4",
+        width=1920,
+        height=1080,
+        fps=25,
+        frame_count=225_000,
+        duration_ms=9_000_000,
+        codec="h264",
+    )
+
+    assert metadata.duration_ms == 9_000_000
+
+
+def test_full_match_input_metadata_rejects_duration_over_150_minutes():
+    with pytest.raises(ValidationError):
+        FullMatchVideoMetadata(
+            source_path="/matches/final.mp4",
+            width=1920,
+            height=1080,
+            fps=25,
+            frame_count=225_001,
+            duration_ms=9_000_001,
+            codec="h264",
+        )
+
+
+def test_proxy_metadata_accepts_1080p_at_25_fps():
+    metadata = ProxyVideoMetadata(
+        source_path="/proxies/final.mp4",
+        width=1920,
+        height=1080,
+        fps=25,
+        frame_count=225_000,
+        duration_ms=9_000_000,
+        codec="h264",
+    )
+
+    assert metadata.height == 1080
+    assert metadata.fps == 25
+
+
+@pytest.mark.parametrize(
+    ("height", "fps"),
+    [
+        (1081, 25),
+        (1080, 25.01),
+    ],
+)
+def test_proxy_metadata_rejects_values_above_the_1080p_25_fps_caps(height, fps):
+    with pytest.raises(ValidationError):
+        ProxyVideoMetadata(
+            source_path="/proxies/final.mp4",
+            width=1920,
+            height=height,
+            fps=fps,
+            frame_count=225_000,
+            duration_ms=9_000_000,
+            codec="h264",
+        )
+
+
+def test_legacy_video_metadata_remains_unrestricted_for_existing_pipeline_compatibility():
+    metadata = VideoMetadata(
+        source_path="/clips/source.mp4",
+        width=3840,
+        height=2160,
+        fps=50,
+        frame_count=450_001,
+        duration_ms=9_000_001,
+        codec="h264",
+    )
+
+    assert metadata.duration_ms == 9_000_001

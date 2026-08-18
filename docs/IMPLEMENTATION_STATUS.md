@@ -2,7 +2,7 @@
 
 ## LAST VERIFIED STATE
 
-The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Task 1 added Pydantic contracts for stages, scoreboard/calibration observations, uploads, artifacts, reviews, model manifests, event metadata, and deterministic 120-second chunks with five-second overlap; the protected suite is now 80 passing tests.
+The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Task 1 added Pydantic contracts for stages, scoreboard/calibration observations, uploads, artifacts, reviews, model manifests, event metadata, 150-minute input and 1080p/25-FPS proxy metadata, and deterministic 120-second chunks with five-second overlap; the protected suite is now 89 passing tests.
 
 ## CURRENT MILESTONE
 
@@ -27,7 +27,7 @@ Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch
 
 ## LAST SUCCESSFUL COMMAND
 
-`docker compose run --rm --no-deps -v "$PWD:/app" backend pytest -q` completed with 80 passed in 2.14 seconds and one known non-failing Starlette `TestClient` deprecation warning.
+`docker compose run --rm --no-deps -v "$PWD:/app" backend pytest -q` completed with 89 passed in 2.16 seconds and one known non-failing Starlette `TestClient` deprecation warning.
 
 ## NEXT EXACT ACTION
 
@@ -64,7 +64,7 @@ Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; D
 - Real clip YOLO11n/CUDA: 436 frames, 0 errors, 25.309 end-to-end FPS, 54.223 detector FPS, 1,219 observations.
 - Fresh non-root Docker backend/UI healthy at `127.0.0.1:8010`/`127.0.0.1:8510`; ports are loopback-only; upload/start completed, events/summaries returned, artifact endpoint HTTP 200.
 - Final rebuilt-image artifact FFprobe: H.264, 640x360, 10 FPS, 300 frames, 30.000 seconds.
-- Full-match Task 1 focused contracts/chunks: 16 passed in 0.11 seconds; complete suite: 80 passed in 2.14 seconds with the known non-failing Starlette `TestClient` deprecation warning; Ruff and `git diff --check` clean.
+- Full-match Task 1 review fixes focused contracts/chunks: 25 passed in 0.13 seconds; complete suite: 89 passed in 2.16 seconds with the known non-failing Starlette `TestClient` deprecation warning; Ruff and `git diff --check` clean.
 
 ## KNOWN FAILURES
 

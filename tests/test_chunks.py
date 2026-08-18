@@ -20,7 +20,6 @@ def test_plan_chunks_keeps_overlap_at_each_chunk_boundary():
         (0, 120_000),
         (115_000, 235_000),
         (230_000, 350_000),
-        (345_000, 350_000),
     ]
 
 
@@ -28,6 +27,14 @@ def test_plan_chunks_returns_a_final_partial_chunk():
     assert plan_chunks(duration_ms=125_000, chunk_ms=120_000, overlap_ms=5_000) == [
         (0, 120_000),
         (115_000, 125_000),
+    ]
+
+
+@pytest.mark.parametrize("duration_ms", [230_001, 234_999])
+def test_plan_chunks_avoids_redundant_short_tails_after_partial_predecessors(duration_ms):
+    assert plan_chunks(duration_ms) == [
+        (0, 120_000),
+        (115_000, duration_ms),
     ]
 
 

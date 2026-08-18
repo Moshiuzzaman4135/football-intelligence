@@ -189,7 +189,7 @@ class UploadSession(BaseModel):
 class EventReview(BaseModel):
     event_id: str = Field(min_length=1)
     reviewer_id: str = Field(min_length=1)
-    decision: EventStatus
+    decision: Literal[EventStatus.CONFIRMED, EventStatus.REJECTED]
     note: str = Field(min_length=1)
     reviewed_at: datetime
 
@@ -229,6 +229,7 @@ class FootballEvent(BaseModel):
     score_transition: str | None = None
     producer_version: str | None = None
     review: EventReview | None = None
+    original_model_output: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "FootballEvent":
@@ -245,6 +246,15 @@ class VideoMetadata(BaseModel):
     frame_count: int = Field(gt=0)
     duration_ms: int = Field(gt=0)
     codec: str
+
+
+class FullMatchVideoMetadata(VideoMetadata):
+    duration_ms: int = Field(gt=0, le=150 * 60 * 1000)
+
+
+class ProxyVideoMetadata(VideoMetadata):
+    height: int = Field(gt=0, le=1080)
+    fps: float = Field(gt=0, le=25)
 
 
 class ModelMetadata(BaseModel):
