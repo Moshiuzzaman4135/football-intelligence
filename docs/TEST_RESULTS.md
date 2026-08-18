@@ -23,3 +23,11 @@
 | `docker compose run --rm --no-deps backend ruff check .` | all checks passed |
 
 No application behavior tests or performance measurements have run yet.
+
+## Domain, persistence, and events — 2026-08-18
+
+- Red evidence: domain/timebase imports failed before implementation; storage/bus/events imports failed before implementation.
+- Domain/timebase: 20 tests passed.
+- Storage/bus/events: 10 tests passed after fixing a reproduced class-scope annotation shadowing issue.
+- Full suite: 30 tests passed in 0.20 seconds.
+- Covered: timestamp conversion, schema validation, track normalization defaults, event time validation, lifecycle transitions, progress monotonicity, persistence round trips, subscriber isolation, temporal kick evidence, deduplication, and noisy-or fusion.
