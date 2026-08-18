@@ -26,6 +26,12 @@ def _get_status(api_url: str, job_id: str) -> dict:
     return response.json()
 
 
+def _list_jobs(api_url: str) -> list[dict]:
+    response = requests.get(f"{api_url}/jobs", timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
 def render_results(api_url: str, job_id: str, status: dict) -> None:
     left, right = st.columns([2, 1])
     with left:
@@ -77,6 +83,13 @@ def render_results(api_url: str, job_id: str, status: dict) -> None:
                 st.caption("Sources: " + ", ".join(event["source"]))
 
 
+def _activate_job(job_id: str) -> None:
+    st.session_state["job_id"] = job_id
+    st.session_state.pop("seek_time", None)
+    st.session_state.pop("clip_event_id", None)
+    st.session_state.pop(f"_video_bytes_{job_id}", None)
+
+
 def main() -> None:
     api_url = os.getenv("FOOTBALL_API_URL", "http://localhost:8000").rstrip("/")
     st.set_page_config(page_title="Football Video Intelligence", layout="wide")
@@ -85,6 +98,45 @@ def main() -> None:
         "Evidence-backed prototype: track IDs are visual IDs, and semantic events need review."
     )
 
+    jobs = _list_jobs(api_url)
+
+    with st.sidebar:
+        st.subheader("Job history")
+        if not jobs:
+            st.caption("No past jobs yet.")
+        else:
+            labels = [
+                f"{job['original_filename']} · {job['status'].upper()} · "
+                f"{job['created_at'][:16].replace('T', ' ')}"
+                for job in jobs
+            ]
+            index = st.selectbox(
+                "Past jobs",
+                range(len(jobs)),
+                format_func=lambda i: labels[i],
+            )
+            selected_job = jobs[index]
+            if st.button(
+                "Load selected job", type="primary", use_container_width=True
+            ):
+                _activate_job(selected_job["id"])
+                st.rerun()
+            confirm = st.checkbox("Confirm delete", key="confirm_delete")
+            if st.button(
+                "Delete selected job",
+                type="secondary",
+                use_container_width=True,
+                disabled=not confirm,
+            ):
+                requests.delete(
+                    f"{api_url}/jobs/{selected_job['id']}", timeout=30
+                ).raise_for_status()
+                st.session_state.pop("job_id", None)
+                st.session_state.pop(f"_video_bytes_{selected_job['id']}", None)
+                st.session_state.pop("confirm_delete", None)
+                st.rerun()
+
+    st.subheader("Process a new video")
     uploaded = st.file_uploader("Upload a short football video", type=["mp4", "mov", "mkv"])
     if uploaded and st.button("Process video", type="primary"):
         response = requests.post(
@@ -95,15 +147,12 @@ def main() -> None:
         response.raise_for_status()
         job = response.json()
         requests.post(f"{api_url}/jobs/{job['id']}/start", timeout=10).raise_for_status()
-        st.session_state["job_id"] = job["id"]
-        st.session_state.pop("seek_time", None)
-        st.session_state.pop("clip_event_id", None)
-        st.session_state.pop(f"_video_bytes_{job['id']}", None)
+        _activate_job(job["id"])
         st.rerun()
 
     job_id = st.session_state.get("job_id")
     if not job_id:
-        st.info("Upload a 30-120 second clip to begin.")
+        st.info("Upload a new clip or load a past job from the sidebar.")
         return
 
     status = _get_status(api_url, job_id)

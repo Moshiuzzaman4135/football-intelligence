@@ -28,6 +28,7 @@ from football_intelligence.persistence.models import (
     JobRow,
     PayloadRow,
     StageRow,
+    UploadRow,
 )
 from football_intelligence.persistence.records import StageRecord
 from football_intelligence.storage import ALLOWED_TRANSITIONS, InvalidJobTransition, JobNotFound
@@ -100,6 +101,22 @@ class SQLAlchemyJobRepository:
                 _job_record(row, _metadata_record(session.get(JobMetadataRow, row.id)))
                 for row in rows
             ]
+
+    def delete(self, job_id: str) -> None:
+        with self._sessions.begin() as session:
+            row = session.get(JobRow, job_id)
+            if row is None:
+                raise JobNotFound(job_id)
+            for upload in session.scalars(
+                select(UploadRow).where(UploadRow.job_id == job_id)
+            ):
+                upload.job_id = None
+            session.execute(
+                delete(JobMetadataRow).where(JobMetadataRow.job_id == job_id)
+            )
+            session.execute(delete(PayloadRow).where(PayloadRow.job_id == job_id))
+            session.execute(delete(StageRow).where(StageRow.job_id == job_id))
+            session.delete(row)
 
     def transition(
         self,

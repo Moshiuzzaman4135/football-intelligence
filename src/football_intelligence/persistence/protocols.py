@@ -33,6 +33,8 @@ class JobStore(Protocol):
 
     def list(self) -> list[JobRecord]: ...
 
+    def delete(self, job_id: str) -> None: ...
+
     def transition(
         self,
         job_id: str,

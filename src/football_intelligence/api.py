@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import shutil
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -520,6 +521,34 @@ def create_app(
             media_type="video/mp4",
             filename=f"{job_id}.annotated.mp4",
         )
+
+    def _is_app_managed_source(source_path: str) -> bool:
+        candidate = Path(source_path)
+        try:
+            return candidate.resolve().is_relative_to(upload_dir.resolve())
+        except (OSError, ValueError):
+            return False
+
+    @application.delete("/jobs/{job_id}", status_code=204)
+    def delete_job(job_id: str) -> Response:
+        job = get_job(job_id)
+        if job.status in {JobStatus.RUNNING, JobStatus.STOPPING}:
+            raise HTTPException(
+                status_code=409, detail="cannot delete a running or stopping job"
+            )
+        if job.output_path:
+            Path(job.output_path).unlink(missing_ok=True)
+        (output_dir / f"{job_id}.tracks.json").unlink(missing_ok=True)
+        for event in repository.get_events(job_id):
+            for suffix in (".mp4", ".png"):
+                (root / "clips" / f"{event.id}{suffix}").unlink(missing_ok=True)
+        workspace = root / "fullmatch" / job_id
+        if workspace.is_dir():
+            shutil.rmtree(workspace, ignore_errors=True)
+        if _is_app_managed_source(job.source_path):
+            Path(job.source_path).unlink(missing_ok=True)
+        repository.delete(job_id)
+        return Response(status_code=204)
 
     def find_event(job_id: str, event_id: str) -> FootballEvent:
         for event in repository.get_events(job_id):

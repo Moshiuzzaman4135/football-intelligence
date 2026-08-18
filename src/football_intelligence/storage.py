@@ -145,6 +145,18 @@ class JobRepository:
             }
         return [self._row_to_job(row, metadata[row["id"]]) for row in rows]
 
+    def delete(self, job_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT 1 FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise JobNotFound(job_id)
+            for table in ("events", "tracks", "track_summaries", "job_metadata"):
+                connection.execute(f"DELETE FROM {table} WHERE job_id = ?", (job_id,))
+            connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
     def transition(
         self,
         job_id: str,
