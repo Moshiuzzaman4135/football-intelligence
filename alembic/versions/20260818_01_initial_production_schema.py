@@ -59,6 +59,8 @@ def upgrade() -> None:
         sa.Column("version", sa.Integer(), nullable=False),
         sa.Column("lease_owner", sa.String(length=255), nullable=True),
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("completion_owner", sa.String(length=255), nullable=True),
+        sa.Column("completion_predecessor_version", sa.Integer(), nullable=True),
         sa.ForeignKeyConstraint(["job_id"], ["jobs.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("job_id", "stage"),
     )

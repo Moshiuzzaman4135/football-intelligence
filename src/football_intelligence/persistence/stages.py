@@ -25,6 +25,7 @@ def claim_stage(
     worker_id: str,
     now: datetime | None = None,
     lease_seconds: int = 300,
+    max_attempts: int = 3,
 ) -> StageRecord:
     current = store.get(job_id, stage)
     claimed_at = _now(now)
@@ -37,6 +38,8 @@ def claim_stage(
             raise StageConflict(f"stage is leased by {current.lease_owner}")
     elif current.status is not StageStatus.PENDING:
         raise StageConflict(f"{current.status.value} stage cannot be claimed")
+    if current.attempt >= max_attempts:
+        raise RetryLimitExceeded(f"stage reached attempt limit {max_attempts}")
     return _cas_or_conflict(
         store,
         current,
@@ -74,6 +77,8 @@ def checkpoint_stage(
             "checkpoint_ms": checkpoint_ms,
             "lease_expires_at": checkpointed_at + timedelta(seconds=lease_seconds),
         },
+        lease_owner=worker_id,
+        lease_valid_at=checkpointed_at,
     )
 
 
@@ -88,8 +93,14 @@ def complete_stage(
 ) -> StageRecord:
     current = store.get(job_id, stage)
     if current.status is StageStatus.COMPLETED:
-        return current
-    _require_running_owner(current, worker_id, "completed", _now(now))
+        if (
+            current.completion_owner == worker_id
+            and current.completion_predecessor_version == expected_version
+        ):
+            return current
+        raise StageConflict("completed stage belongs to a different delivery")
+    completed_at = _now(now)
+    _require_running_owner(current, worker_id, "completed", completed_at)
     _require_version(current, expected_version)
     return _cas_or_conflict(
         store,
@@ -99,7 +110,11 @@ def complete_stage(
             "lease_owner": None,
             "lease_expires_at": None,
             "error": None,
+            "completion_owner": worker_id,
+            "completion_predecessor_version": current.version,
         },
+        lease_owner=worker_id,
+        lease_valid_at=completed_at,
     )
 
 
@@ -114,7 +129,8 @@ def fail_stage(
     now: datetime | None = None,
 ) -> StageRecord:
     current = store.get(job_id, stage)
-    _require_running_owner(current, worker_id, "fail", _now(now))
+    failed_at = _now(now)
+    _require_running_owner(current, worker_id, "fail", failed_at)
     _require_version(current, expected_version)
     return _cas_or_conflict(
         store,
@@ -125,6 +141,8 @@ def fail_stage(
             "lease_owner": None,
             "lease_expires_at": None,
         },
+        lease_owner=worker_id,
+        lease_valid_at=failed_at,
     )
 
 
@@ -169,7 +187,12 @@ def _require_version(current: StageRecord, expected_version: int) -> None:
 
 
 def _cas_or_conflict(
-    store: StageStore, current: StageRecord, values: dict[str, object]
+    store: StageStore,
+    current: StageRecord,
+    values: dict[str, object],
+    *,
+    lease_owner: str | None = None,
+    lease_valid_at: datetime | None = None,
 ) -> StageRecord:
     updated = store.compare_and_set(
         current.job_id,
@@ -177,6 +200,8 @@ def _cas_or_conflict(
         expected_status=current.status,
         expected_version=current.version,
         values=values,
+        expected_lease_owner=lease_owner,
+        lease_valid_at=lease_valid_at,
     )
     if updated is None:
         raise StageConflict("stage state or version changed concurrently")

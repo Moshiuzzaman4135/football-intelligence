@@ -33,6 +33,10 @@ from football_intelligence.persistence.records import StageRecord
 from football_intelligence.storage import ALLOWED_TRANSITIONS, InvalidJobTransition, JobNotFound
 
 
+class RawObservationPersistenceError(ValueError):
+    pass
+
+
 def create_persistence_engine(database_url: str) -> Engine:
     options: dict[str, object] = {"future": True}
     if database_url.startswith("sqlite:"):
@@ -161,12 +165,14 @@ class SQLAlchemyJobRepository:
         ]
 
     def save_tracks(self, job_id: str, tracks: list[TrackObservation]) -> None:
-        self._save_models("tracks", job_id, tracks)
+        del job_id, tracks
+        raise RawObservationPersistenceError(
+            "raw track observations require an external artifact store"
+        )
 
     def get_tracks(self, job_id: str) -> list[TrackObservation]:
-        return [
-            TrackObservation.model_validate_json(item) for item in self._load_json("tracks", job_id)
-        ]
+        self.get(job_id)
+        return []
 
     def save_track_summaries(self, job_id: str, summaries: list[TrackSummary]) -> None:
         self._save_models("track_summaries", job_id, summaries)
@@ -210,33 +216,34 @@ class SQLAlchemyJobRepository:
         job: JobRecord,
         *,
         events: list[FootballEvent],
-        tracks: list[TrackObservation],
         track_summaries: list[TrackSummary],
     ) -> bool:
         """Insert one immutable legacy snapshot, returning false for an existing job."""
-        with self._sessions.begin() as session:
-            if session.get(JobRow, job.id) is not None:
+        with self._sessions() as session, session.begin():
+            try:
+                with session.begin_nested():
+                    session.add(
+                        JobRow(
+                            id=job.id,
+                            source_path=job.source_path,
+                            original_filename=job.original_filename,
+                            status=job.status.value,
+                            progress=job.progress,
+                            output_path=job.output_path,
+                            error=job.error,
+                            metrics_json=json.dumps(job.metrics),
+                            created_at=job.created_at,
+                            updated_at=job.updated_at,
+                            version=0,
+                        )
+                    )
+                    session.flush()
+            except IntegrityError:
                 return False
-            session.add(
-                JobRow(
-                    id=job.id,
-                    source_path=job.source_path,
-                    original_filename=job.original_filename,
-                    status=job.status.value,
-                    progress=job.progress,
-                    output_path=job.output_path,
-                    error=job.error,
-                    metrics_json=json.dumps(job.metrics),
-                    created_at=job.created_at,
-                    updated_at=job.updated_at,
-                    version=0,
-                )
-            )
             if job.metadata != JobMetadata():
                 session.add(JobMetadataRow(job_id=job.id, **_metadata_values(job.metadata)))
             for kind, models in (
                 ("events", events),
-                ("tracks", tracks),
                 ("track_summaries", track_summaries),
             ):
                 session.add_all(
@@ -318,18 +325,28 @@ class SQLAlchemyStageRepository:
         expected_status: StageStatus,
         expected_version: int,
         values: dict[str, object],
+        expected_lease_owner: str | None = None,
+        lease_valid_at: datetime | None = None,
     ) -> StageRecord | None:
         updates = dict(values)
         updates["version"] = expected_version + 1
+        predicates = [
+            StageRow.job_id == job_id,
+            StageRow.stage == stage.value,
+            StageRow.status == expected_status.value,
+            StageRow.version == expected_version,
+        ]
+        if lease_valid_at is not None:
+            predicates.extend(
+                (
+                    StageRow.lease_owner == expected_lease_owner,
+                    StageRow.lease_expires_at > lease_valid_at,
+                )
+            )
         with self._sessions.begin() as session:
             result = session.execute(
                 update(StageRow)
-                .where(
-                    StageRow.job_id == job_id,
-                    StageRow.stage == stage.value,
-                    StageRow.status == expected_status.value,
-                    StageRow.version == expected_version,
-                )
+                .where(*predicates)
                 .values(**updates)
             )
             if result.rowcount != 1:
@@ -364,6 +381,8 @@ def _stage_record(row: StageRow) -> StageRecord:
         version=row.version,
         lease_owner=row.lease_owner,
         lease_expires_at=_as_utc(row.lease_expires_at) if row.lease_expires_at else None,
+        completion_owner=row.completion_owner,
+        completion_predecessor_version=row.completion_predecessor_version,
     )
 
 

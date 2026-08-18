@@ -14,7 +14,6 @@ from football_intelligence.domain import (
     JobRecord,
     JobStatus,
     ModelMetadata,
-    TrackObservation,
     TrackSummary,
     VideoMetadata,
 )
@@ -25,6 +24,7 @@ from football_intelligence.persistence.sqlalchemy import SQLAlchemyJobRepository
 class ImportResult:
     imported_jobs: int
     skipped_jobs: int
+    skipped_track_observations: int
 
 
 def import_legacy_sqlite(
@@ -36,7 +36,9 @@ def import_legacy_sqlite(
     connection.row_factory = sqlite3.Row
     imported = 0
     skipped = 0
+    skipped_track_observations = 0
     try:
+        connection.execute("BEGIN")
         jobs = connection.execute("SELECT * FROM jobs ORDER BY created_at, id").fetchall()
         for row in jobs:
             job_id = row["id"]
@@ -57,14 +59,24 @@ def import_legacy_sqlite(
             inserted = target.import_job(
                 job,
                 events=_read_models(connection, "events", job_id, FootballEvent),
-                tracks=_read_models(connection, "tracks", job_id, TrackObservation),
                 track_summaries=_read_models(connection, "track_summaries", job_id, TrackSummary),
             )
+            skipped_track_observations += connection.execute(
+                "SELECT COUNT(*) FROM tracks WHERE job_id = ?", (job_id,)
+            ).fetchone()[0]
             imported += int(inserted)
             skipped += int(not inserted)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
-    return ImportResult(imported_jobs=imported, skipped_jobs=skipped)
+    return ImportResult(
+        imported_jobs=imported,
+        skipped_jobs=skipped,
+        skipped_track_observations=skipped_track_observations,
+    )
 
 
 def _read_models(connection, table: str, job_id: str, model_type):

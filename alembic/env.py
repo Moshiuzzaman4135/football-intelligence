@@ -8,7 +8,9 @@ from football_intelligence.persistence.models import Base
 
 config = context.config
 if database_url := os.getenv("FOOTBALL_DATABASE_URL"):
-    config.set_main_option("sqlalchemy.url", database_url)
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+elif not config.get_main_option("sqlalchemy.url"):
+    raise RuntimeError("FOOTBALL_DATABASE_URL is required for Alembic migrations")
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 target_metadata = Base.metadata

@@ -17,3 +17,5 @@ class StageRecord(BaseModel):
     version: int = Field(ge=0)
     lease_owner: str | None
     lease_expires_at: datetime | None
+    completion_owner: str | None
+    completion_predecessor_version: int | None = Field(default=None, ge=0)

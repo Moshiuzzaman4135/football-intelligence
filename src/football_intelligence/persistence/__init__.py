@@ -4,6 +4,7 @@ from football_intelligence.persistence.legacy_import import ImportResult, import
 from football_intelligence.persistence.protocols import JobStore, StageStore
 from football_intelligence.persistence.records import StageRecord
 from football_intelligence.persistence.sqlalchemy import (
+    RawObservationPersistenceError,
     SQLAlchemyJobRepository,
     SQLAlchemyStageRepository,
     create_persistence_engine,
@@ -22,6 +23,7 @@ from football_intelligence.persistence.stages import (
 __all__ = [
     "JobStore",
     "ImportResult",
+    "RawObservationPersistenceError",
     "RetryLimitExceeded",
     "SQLAlchemyJobRepository",
     "SQLAlchemyStageRepository",

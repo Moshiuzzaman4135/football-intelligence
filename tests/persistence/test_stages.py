@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import update
 
 from football_intelligence.domain import StageName, StageStatus
 from football_intelligence.persistence import (
@@ -18,6 +19,7 @@ from football_intelligence.persistence import (
     fail_stage,
     retry_stage,
 )
+from football_intelligence.persistence.models import StageRow
 
 
 @pytest.fixture
@@ -115,7 +117,57 @@ def test_completion_is_idempotent_for_replayed_delivery(stores):
     )
 
     assert replay == first
+    assert replay.completion_owner == "worker-a"
+    assert replay.completion_predecessor_version == claimed.version
     assert stages.get(job.id, StageName.OCR).version == first.version
+
+
+def test_completed_replay_must_match_worker_and_predecessor_version(stores):
+    _, stages, job = stores
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    first = claim_stage(
+        stages,
+        job.id,
+        StageName.OCR,
+        worker_id="worker-a",
+        now=now,
+        lease_seconds=30,
+    )
+    second = claim_stage(
+        stages,
+        job.id,
+        StageName.OCR,
+        worker_id="worker-b",
+        now=now + timedelta(seconds=30),
+        lease_seconds=30,
+    )
+    complete_stage(
+        stages,
+        job.id,
+        StageName.OCR,
+        worker_id="worker-b",
+        expected_version=second.version,
+        now=now + timedelta(seconds=31),
+    )
+
+    with pytest.raises(StageConflict, match="different delivery"):
+        complete_stage(
+            stages,
+            job.id,
+            StageName.OCR,
+            worker_id="worker-a",
+            expected_version=first.version,
+            now=now + timedelta(seconds=31),
+        )
+    with pytest.raises(StageConflict, match="different delivery"):
+        complete_stage(
+            stages,
+            job.id,
+            StageName.OCR,
+            worker_id="worker-b",
+            expected_version=first.version,
+            now=now + timedelta(seconds=31),
+        )
 
 
 def test_checkpoint_must_increase_and_use_current_version(stores):
@@ -219,6 +271,45 @@ def test_expired_lease_cannot_checkpoint_or_complete(stores):
         )
 
 
+def test_lease_expiry_race_is_rejected_by_atomic_update(stores):
+    _, stages, job = stores
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    claimed = claim_stage(
+        stages,
+        job.id,
+        StageName.OCR,
+        worker_id="worker-a",
+        now=now,
+        lease_seconds=30,
+    )
+    operation_time = now + timedelta(seconds=5)
+
+    class ExpireLeaseBeforeCas:
+        def get(self, job_id, stage):
+            return stages.get(job_id, stage)
+
+        def compare_and_set(self, job_id, stage, **kwargs):
+            with stages.engine.begin() as connection:
+                connection.execute(
+                    update(StageRow)
+                    .where(StageRow.job_id == job_id, StageRow.stage == stage.value)
+                    .values(lease_expires_at=operation_time)
+                )
+            return stages.compare_and_set(job_id, stage, **kwargs)
+
+    with pytest.raises(StageConflict, match="changed concurrently"):
+        complete_stage(
+            ExpireLeaseBeforeCas(),
+            job.id,
+            StageName.OCR,
+            worker_id="worker-a",
+            expected_version=claimed.version,
+            now=operation_time,
+        )
+
+    assert stages.get(job.id, StageName.OCR).status is StageStatus.RUNNING
+
+
 def test_failed_stage_can_retry_only_below_attempt_limit(stores):
     _, stages, job = stores
     first = claim_stage(stages, job.id, StageName.OCR, worker_id="worker-a")
@@ -256,6 +347,42 @@ def test_failed_stage_can_retry_only_below_attempt_limit(stores):
             StageName.OCR,
             expected_version=failed_again.version,
             max_attempts=2,
+        )
+
+
+def test_claim_and_expired_lease_reclaims_stop_after_three_attempts(stores):
+    _, stages, job = stores
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+
+    first = claim_stage(
+        stages, job.id, StageName.OCR, worker_id="worker-a", now=now, lease_seconds=30
+    )
+    second = claim_stage(
+        stages,
+        job.id,
+        StageName.OCR,
+        worker_id="worker-b",
+        now=now + timedelta(seconds=30),
+        lease_seconds=30,
+    )
+    third = claim_stage(
+        stages,
+        job.id,
+        StageName.OCR,
+        worker_id="worker-c",
+        now=now + timedelta(seconds=60),
+        lease_seconds=30,
+    )
+
+    assert (first.attempt, second.attempt, third.attempt) == (1, 2, 3)
+    with pytest.raises(RetryLimitExceeded, match="attempt limit 3"):
+        claim_stage(
+            stages,
+            job.id,
+            StageName.OCR,
+            worker_id="worker-d",
+            now=now + timedelta(seconds=90),
+            lease_seconds=30,
         )
 
 

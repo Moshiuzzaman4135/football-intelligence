@@ -1,6 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
+from threading import Barrier
+
+import pytest
+from sqlalchemy import event
 
 from football_intelligence.domain import (
     BoundingBox,
@@ -14,6 +18,7 @@ from football_intelligence.domain import (
 )
 from football_intelligence.persistence import (
     JobStore,
+    RawObservationPersistenceError,
     SQLAlchemyJobRepository,
     create_persistence_engine,
     create_schema,
@@ -127,12 +132,52 @@ def test_legacy_sqlite_import_is_complete_repeatable_and_read_only(tmp_path: Pat
 
     assert first.imported_jobs == 1
     assert first.skipped_jobs == 0
+    assert first.skipped_track_observations == 1
     assert second.imported_jobs == 0
     assert second.skipped_jobs == 1
+    assert second.skipped_track_observations == 1
     assert target.get(job.id) == legacy.get(job.id)
     assert target.get(job.id).metadata.source == source
     assert target.get(job.id).metadata.model == model
     assert target.get_events(job.id) == [event]
-    assert target.get_tracks(job.id) == [track]
+    assert target.get_tracks(job.id) == []
     assert target.get_track_summaries(job.id) == [summary]
     assert sha256(legacy_path.read_bytes()).hexdigest() == original_digest
+
+
+def test_sqlalchemy_repository_rejects_raw_track_observation_rows(tmp_path: Path):
+    repository = _new_repository(tmp_path / "production.db")
+    job = repository.create("/clips/match.mp4", "match.mp4")
+    track = TrackObservation(
+        track_id=2,
+        object_class="ball",
+        bbox=BoundingBox(x1=10, y1=10, x2=14, y2=14),
+        confidence=0.8,
+        timestamp_ms=100,
+        frame_index=3,
+    )
+
+    with pytest.raises(RawObservationPersistenceError, match="external artifact"):
+        repository.save_tracks(job.id, [track])
+
+    assert repository.get_tracks(job.id) == []
+
+
+def test_concurrent_legacy_importers_finish_with_one_copy(tmp_path: Path):
+    legacy_path = tmp_path / "legacy.db"
+    legacy = JobRepository(legacy_path)
+    job = legacy.create("/clips/match.mp4", "match.mp4")
+    target = _new_repository(tmp_path / "production.db")
+    insert_barrier = Barrier(2)
+
+    @event.listens_for(target.engine, "before_cursor_execute")
+    def synchronize_job_inserts(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("INSERT INTO JOBS"):
+            insert_barrier.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: import_legacy_sqlite(legacy_path, target), range(2)))
+
+    assert sum(result.imported_jobs for result in results) == 1
+    assert sum(result.skipped_jobs for result in results) == 1
+    assert target.list() == [target.get(job.id)]

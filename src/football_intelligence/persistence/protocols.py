@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from football_intelligence.domain import (
@@ -82,4 +83,6 @@ class StageStore(Protocol):
         expected_status: StageStatus,
         expected_version: int,
         values: dict[str, object],
+        expected_lease_owner: str | None = None,
+        lease_valid_at: datetime | None = None,
     ) -> StageRecord | None: ...

@@ -42,6 +42,8 @@ class StageRow(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     lease_owner: Mapped[str | None] = mapped_column(String(255))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completion_owner: Mapped[str | None] = mapped_column(String(255))
+    completion_predecessor_version: Mapped[int | None] = mapped_column(Integer)
 
 
 class PayloadRow(Base):
