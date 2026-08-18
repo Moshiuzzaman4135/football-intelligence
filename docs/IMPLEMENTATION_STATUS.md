@@ -2,71 +2,79 @@
 
 ## LAST VERIFIED STATE
 
-M0 discovery and the M1 recovery/runtime harness are verified. The CPU Docker image builds, imports the package/OpenCV, includes FFmpeg, and passes Ruff. No pipeline behavior has yet been claimed.
+The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510.
 
 ## CURRENT MILESTONE
 
-M2 Video ingestion and M3/M4 detector/tracker adapters (test-first).
+M16 final demo validation, documentation, Git checkpoint, and publication. M9-M15 remain optional showcase upgrades and are not allowed to destabilize the verified slice.
 
 ## COMPLETED MILESTONES
 
-- M0 Repository discovery.
-- M1 Harness + project skeleton.
-- Domain/timebase normalization.
-- SQLite job state machine and event/track persistence.
-- In-process semantic bus, temporal kick heuristic, deduplication, and fusion.
+- M0 repository/reference/compute discovery.
+- M1 durable harness, runtime skeleton, and Docker baseline.
+- M2 video probe and timestamp-preserving frame ingestion.
+- M3 replaceable color and Ultralytics detector adapters; YOLO11n CUDA inference tested.
+- M4 normalized IoU visual tracking IDs.
+- M5 overlays, trails, timestamps, event banners, and H.264 output.
+- M6 temporal kick candidates, deduplication, and noisy-or fusion.
+- M7 SQLite persistence, semantic in-process bus, background job API, progress, stop, tracks/events/artifacts.
+- M8 Streamlit upload, progress, annotated player, metrics, and evidence timeline.
 
 ## CURRENT WORK
 
-Write failing tests for video probing/frame iteration, deterministic detection, and stable IoU tracking.
+Run the fresh final suite and smoke checks, reconcile the independent-review fixes in the documentation, commit the coherent vertical slice, create the GitHub repository, and push `main`.
 
 ## LAST SUCCESSFUL COMMAND
 
-`docker compose run --rm --no-deps -v "$PWD:/app" backend pytest -q` -> `30 passed`.
+Final rebuilt-image live job `eef77882-63ab-40a1-bed7-f657ca98461b` completed 300/300 frames with zero errors in 2.0998 seconds, returned one event and four track summaries, and served HTTP 200 H.264 media. Both health checks passed; backend runs as UID 1000; ports remain loopback-only.
 
 ## NEXT EXACT ACTION
 
-Create video/detection/tracking tests with a generated MP4, observe expected failures, then implement their adapters.
+Stage only this repository's verified worktree, commit the vertical slice, create the GitHub repository, push `main`, verify the remote SHA, and record the published URL.
 
 ## FILES MODIFIED
 
-Added domain, timebase, SQLite repository, semantic bus, temporal event engine, and their tests.
+Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation.
 
 ## MODELS INSTALLED
 
-None in this project.
+- Optional ignored local weight: `models/yolo11n.pt`, SHA-256 `0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1`.
+- Optional ignored Python packages: `data/ml-site/`, including Ultralytics 8.4.121 and local CUDA PyTorch runtime dependencies supplied by the existing test image.
 
 ## MODELS TESTED
 
-None in this project.
+YOLO11n loaded through this repository's `UltralyticsDetector` and processed all 436 frames of the real clip on CUDA with zero frame errors. It emitted 1,207 `player` and 12 `ball` observations; role-specific goalkeeper/referee labels were not available from COCO weights.
 
 ## LOCAL GPU STATUS
 
-RTX 3050 4 GB visible through host and CUDA container. Docker `--gpus all` successfully exposed the 4096 MiB GPU with driver 610.43.03. System Python 3.14.6 has no PyTorch.
+RTX 3050 4 GB is visible through host and Docker CUDA runtime. The actual YOLO run completed at 25.309 end-to-end FPS and 54.223 detector FPS. Peak VRAM was not sampled, so no VRAM consumption claim is made. System Python 3.14.6 has no PyTorch; Python 3.12 Docker is the supported application runtime.
 
 ## REMOTE GPU STATUS
 
-Connectivity verified. RTX 3080 10 GB was idle except display usage; Docker 29.3.0/Compose 5.1.0 available, 62 GiB RAM available. Root filesystem has about 9 GiB free and `/mnt/shared` about 76 GiB; no project directory created yet. `python` is absent; `python3` still needs checking.
+Connectivity verified read-only. RTX 3080 10 GB was idle except display usage; Docker 29.3.0/Compose 5.1.0 and 62 GiB RAM were available. Root had about 9 GiB free and `/mnt/shared` about 76 GiB. No workspace, weights, package installs, or server changes were made because the local GPU was sufficient for the mandatory slice.
 
 ## TESTS RUN
 
-- `docker compose build` succeeded.
-- Container import printed `football_intelligence 0.1.0` and OpenCV `4.14.0`.
-- Container FFmpeg is `7.1.5-0+deb13u1`.
-- `ruff check .` passed.
-- Domain/timebase red run: missing `domain`/`timebase` modules; green run: 20 passed.
-- Storage/bus/events red run: missing modules; first green attempt exposed class-scope annotation shadowing; one-line future-annotations fix; focused green run: 10 passed.
-- Full suite: 30 passed in 0.20 seconds. Ruff rerun is required after one formatting-only E501 correction.
+- Latest full suite after all review fixes: 64 passed in 2.09 seconds; one non-failing Starlette `TestClient` deprecation warning.
+- Latest Ruff, Compose configuration, and `git diff --check`: clean.
+- Review-fix focused suites passed for atomic start/backpressure/model failure, media integrity, event continuity/fusion, metadata, settings, API, storage, and the 30-second fixture.
+- Latest deterministic live pipeline: 300 frames, 0 errors, 146.486 FPS, kick candidate confidence 0.850.
+- Real clip degraded path: 436 frames, 0 errors, 25.086 FPS; 17,694 noisy observations, demonstrating why this fallback is not a real-match detector.
+- Real clip YOLO11n/CUDA: 436 frames, 0 errors, 25.309 end-to-end FPS, 54.223 detector FPS, 1,219 observations.
+- Fresh non-root Docker backend/UI healthy at `127.0.0.1:8010`/`127.0.0.1:8510`; ports are loopback-only; upload/start completed, events/summaries returned, artifact endpoint HTTP 200.
+- Final rebuilt-image artifact FFprobe: H.264, 640x360, 10 FPS, 300 frames, 30.000 seconds.
 
 ## KNOWN FAILURES
 
-- `import torch` fails in system Python because PyTorch is not installed.
-- Remote `python --version` fails because only the `python3` command may be installed.
+- Host system Python cannot import PyTorch; use the documented Docker runtime.
+- Port 8000 was already occupied by an unrelated container, so this project defaults to host port 8010.
+- Existing ignored artifacts created by the earlier root image required a one-time ownership correction before the new non-root image could reuse the development database. Fresh clones do not have this migration issue; other host owners can export their UID/GID as documented.
+- The real wide-angle clip did not cross heuristic event thresholds in either detector run; use the deterministic fixture for the known event walkthrough.
 
 ## KNOWN LIMITATIONS
 
-No implemented pipeline, API, UI, model integration, annotated output, or measured demo result yet. Model research is source verification only. Core dependency versions are broad bounded ranges, not a lockfile yet.
+The core image defaults to a synthetic/degraded color detector. YOLO is optional and AGPL/Enterprise licensing must be evaluated for deployment. Tracking uses IoU plus a bounded ball-center fallback rather than ByteTrack/BoT-SORT. YOLO COCO classes only normalize person and sports ball, not goalkeeper/referee. Frame observations remain stored for short clips even though `/tracks` returns summaries; retention/pagination is future work. Team classification, RTSP ingestion, pitch calibration/radar, OCR/audio/VLM evidence, action spotting, and model-based event fusion are not implemented. The UI uses manual refresh rather than WebSockets. The loopback demo has no authentication; nonlocal exposure is unsupported. No lockfile or remote heavy-model benchmark exists yet.
 
 ## BLOCKERS
 
-None.
+None for the mandatory vertical slice. The final independent targeted review reports no Critical or Important issues and a `Ready to merge: Yes` verdict.

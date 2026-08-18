@@ -47,9 +47,11 @@ Resume from `NEXT EXACT ACTION` in `docs/IMPLEMENTATION_STATUS.md`. Before claim
 
 ```bash
 cp .env.example .env
+export FOOTBALL_UID="$(id -u)" FOOTBALL_GID="$(id -g)"
 docker compose build
-docker compose run --rm app pytest
-docker compose up backend ui
+docker compose run --rm --no-deps -v "$PWD:/app" backend pytest -q
+docker compose run --rm --no-deps -v "$PWD:/app" backend ruff check .
+docker compose up -d backend ui
 ```
 
 Native development, if Python 3.11/3.12 is available:
@@ -60,16 +62,25 @@ source .venv/bin/activate
 pip install -e '.[dev,ml]'
 pytest
 ruff check .
-uvicorn football_intelligence.api:app --reload --port 8000
-streamlit run src/football_intelligence/ui.py --server.port 8501
+uvicorn football_intelligence.api:app --reload --port 8010
+FOOTBALL_API_URL=http://localhost:8010 \
+  streamlit run src/football_intelligence/ui.py --server.port 8510
 python -m football_intelligence.worker --job-id JOB_ID
 ```
 
 Demo processing:
 
 ```bash
-python -m football_intelligence.cli process tests/assets/football-demo.mp4
+docker compose run --rm --no-deps -v "$PWD:/app" backend \
+  python -m football_intelligence.demo_fixture \
+  /app/data/uploads/synthetic-football-demo.mp4
+docker compose run --rm --no-deps -v "$PWD:/app" backend \
+  football-intelligence process \
+  /app/data/uploads/synthetic-football-demo.mp4 --data-root /app/data
 ```
+
+Default published ports are API `8010` and UI `8510`; override them with
+`FOOTBALL_BACKEND_PORT` and `FOOTBALL_UI_PORT`.
 
 ## Architecture and coding rules
 
@@ -85,7 +96,7 @@ python -m football_intelligence.cli process tests/assets/football-demo.mp4
 
 ## Model and semantic rules
 
-- Default detector is a replaceable Ultralytics adapter using a small, legally usable pretrained weight; CPU fallback is mandatory.
+- Default detector is the deterministic OpenCV degraded path; real-footage use should select the optional replaceable Ultralytics adapter only after resolving its deployment license. CPU execution remains available.
 - Track IDs are visual continuity identifiers, never player identities.
 - Team labels are only `team_1`, `team_2`, or `unknown`.
 - Every semantic event contains confidence, evidence, source, and `needs_review`.
@@ -107,4 +118,3 @@ python -m football_intelligence.cli process tests/assets/football-demo.mp4
 The UI accepts a football clip, starts a job, shows progress, displays a confidence/evidence timeline, and plays an annotated MP4 with attempted player/ball detection and visual tracking IDs. The API and documented commands start cleanly, tests pass, failures and limitations are honest, and this harness identifies the last verified state and next action.
 
 Persistent records live in `docs/IMPLEMENTATION_STATUS.md`, `docs/TEST_RESULTS.md`, `docs/DECISIONS.md`, `docs/MODELS.md`, `docs/REFERENCE_REPOS.md`, and `docs/DEMO.md`.
-

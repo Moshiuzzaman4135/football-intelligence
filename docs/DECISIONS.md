@@ -23,3 +23,39 @@ The core path uses the local RTX 3050 if verified, then CPU. The remote RTX 3080
 ## 2026-08-18: optional ML licensing boundary
 
 Ultralytics and the published four-class YOLOv8x weight are AGPL-3.0 (or require an Enterprise license for incompatible deployment). Keep them in an optional `ml` extra and never bundle weights. The credential-free core uses OpenCV/IoU and describes its accuracy honestly.
+
+## 2026-08-18: default demo detector remains deterministic
+
+The color detector is the default only so the complete offline mechanics and event timeline are reproducible without a weight download or license decision. A real Pexels clip exposed severe false positives (17,694 observations), while the optional YOLO11n run produced 1,219 much cleaner observations. Therefore documentation labels the color path as synthetic/degraded and never as real-football accuracy.
+
+## 2026-08-18: local GPU was sufficient
+
+YOLO11n processed the selected real clip successfully on the local RTX 3050, so no remote packages, files, weights, or service were created. This follows the cheapest-sufficient-compute rule and keeps the application independent of SSH. The RTX 3080 remains a later four-class/action-model evaluation target.
+
+## 2026-08-18: host ports 8010 and 8510
+
+An unrelated existing service owns host port 8000. Compose maps the backend to 8010 and Streamlit to 8510 by default, with environment overrides, while container-to-container traffic still uses 8000. The unrelated service was left untouched.
+
+## 2026-08-18: generated fixture is the known event demonstration
+
+A code-generated 30-second fixture provides deterministic rapid ball movement near a tracked player. It satisfies the demo-duration target, validates honest evidence flow, and produces a known kick candidate. The downloaded real clip remains the visual detector benchmark and is not forced to produce semantic events it does not support.
+
+## 2026-08-18: atomic lifecycle and bounded local admission
+
+SQLite transitions use `BEGIN IMMEDIATE` plus status-qualified updates. The API reserves `created -> running` before enqueueing, rejects duplicate starts, bounds admitted running/queued jobs at four, and persists background model-initialization failures. Progress updates cannot overwrite a concurrent status change.
+
+## 2026-08-18: media integrity is a completion condition
+
+Premature decode EOF fails the job. A recoverable inference/frame exception writes the unchanged source frame so later timestamps do not shift. FFmpeg no longer truncates to a shorter audio stream, and the finalized output must pass codec, geometry, FPS, frame-count, and duration checks before the job becomes completed.
+
+## 2026-08-18: compact summaries and persisted provenance
+
+Frame observations remain in SQLite for this short-clip prototype, but the public `/tracks` endpoint returns compact per-track summaries. Source and output probes plus detector/model/device/framework metadata are persisted with the job. Pagination and observation retention policies remain future production work.
+
+## 2026-08-18: local-only non-root demo containers
+
+Backend/UI ports bind to `127.0.0.1` by default and both containers run as a non-root UID/GID selected by `FOOTBALL_UID`/`FOOTBALL_GID` (default 1000). This is still an unauthenticated local showcase; any nonlocal deployment requires authentication, rate limiting, and a deliberate network policy.
+
+## 2026-08-18: cancellation wins lifecycle races
+
+Finalization is one SQLite transaction that either completes a still-running job or stops a job whose cancellation arrived first. A reserved worker entering after a stop request transitions directly to stopped, and background initialization errors do not turn a concurrent cancellation into failure. Barrier-based tests cover both cancellation windows.

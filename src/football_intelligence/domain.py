@@ -89,8 +89,8 @@ class FootballEvent(BaseModel):
     player: str = "unknown"
     description: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
-    evidence: list[EventEvidence] = Field(default_factory=list)
-    source: list[str] = Field(default_factory=list)
+    evidence: list[EventEvidence] = Field(min_length=1)
+    source: list[str] = Field(min_length=1)
     track_ids: list[int] = Field(default_factory=list)
     frame_refs: list[int] = Field(default_factory=list)
     needs_review: bool = True
@@ -102,6 +102,43 @@ class FootballEvent(BaseModel):
         return self
 
 
+class VideoMetadata(BaseModel):
+    source_path: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    fps: float = Field(gt=0)
+    frame_count: int = Field(gt=0)
+    duration_ms: int = Field(gt=0)
+    codec: str
+
+
+class ModelMetadata(BaseModel):
+    detector: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+    device: str = Field(min_length=1)
+    framework: str = Field(min_length=1)
+    weight_sha256: str | None = None
+
+
+class JobMetadata(BaseModel):
+    source: VideoMetadata | None = None
+    output: VideoMetadata | None = None
+    model: ModelMetadata | None = None
+
+
+class TrackSummary(BaseModel):
+    track_id: int = Field(ge=0)
+    object_class: str = Field(min_length=1)
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(ge=0)
+    first_frame: int = Field(ge=0)
+    last_frame: int = Field(ge=0)
+    observation_count: int = Field(gt=0)
+    mean_confidence: float = Field(ge=0, le=1)
+    max_confidence: float = Field(ge=0, le=1)
+    team_id: TeamId = "unknown"
+
+
 class JobRecord(BaseModel):
     id: str
     source_path: str
@@ -111,5 +148,6 @@ class JobRecord(BaseModel):
     output_path: str | None = None
     error: str | None = None
     metrics: dict[str, float | int | str] = Field(default_factory=dict)
+    metadata: JobMetadata = Field(default_factory=JobMetadata)
     created_at: datetime
     updated_at: datetime

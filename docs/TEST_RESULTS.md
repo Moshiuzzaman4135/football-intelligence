@@ -22,7 +22,7 @@
 | container FFmpeg version | `7.1.5-0+deb13u1` |
 | `docker compose run --rm --no-deps backend ruff check .` | all checks passed |
 
-No application behavior tests or performance measurements have run yet.
+The core runtime was later rebuilt after adding the application modules. The final verification section below supersedes this early harness-only statement.
 
 ## Domain, persistence, and events — 2026-08-18
 
@@ -31,3 +31,45 @@ No application behavior tests or performance measurements have run yet.
 - Storage/bus/events: 10 tests passed after fixing a reproduced class-scope annotation shadowing issue.
 - Full suite: 30 tests passed in 0.20 seconds.
 - Covered: timestamp conversion, schema validation, track normalization defaults, event time validation, lifecycle transitions, progress monotonicity, persistence round trips, subscriber isolation, temporal kick evidence, deduplication, and noisy-or fusion.
+
+## Video, API, and UI vertical slice — 2026-08-18
+
+- Full pre-documentation suite: 49 passed in 0.92 seconds. The only warning is a non-failing Starlette `TestClient` deprecation warning.
+- Ruff: all checks passed.
+- Coverage includes video probing/iteration, color and Ultralytics adapters, IoU tracking continuity, overlay rendering, real encoded-video pipeline integration, API health/upload/start/stop/artifact behavior, and UI formatting helpers.
+- Live Docker Compose services: backend healthy at `http://localhost:8010/health`; Streamlit healthy at `http://localhost:8510/_stcore/health`.
+- Live API run on the real fixture showed monotonic sampled progress from 0 through 99 and then `completed`/100; annotated artifact returned HTTP 200.
+
+## Media and performance measurements — 2026-08-18
+
+| Run | Frames | Result | Detector FPS | End-to-end FPS | Tracking | Overlay |
+|---|---:|---|---:|---:|---:|---:|
+| Synthetic 640x360/10 FPS, color + IoU/center fallback | 300 | 0 errors; 1 kick candidate | 1212.176 | 146.486 | 0.011 s | 0.058 s |
+| Pexels 1920x1080/25 FPS, color + IoU | 436 | 0 errors; excessive false positives | 85.873 | 25.086 | 1.621 s | 1.211 s |
+| Pexels 1920x1080/25 FPS, YOLO11n CUDA + IoU | 436 | 0 errors; 1,207 player + 12 ball observations | 54.223 | 25.309 | 0.0198 s | 0.3442 s |
+
+The latest deterministic output was validated by the pipeline as H.264, 640x360, 10 FPS, 300 frames, and 30.000 seconds. The real outputs were H.264, 1920x1080, 25 FPS, and 17.44 seconds. Measurements are single short-clip development runs, not statistically rigorous benchmarks. GPU model was the local RTX 3050 4 GB; peak VRAM was not sampled.
+
+## Known-event fixture
+
+Live API job `5de00400-4dda-4333-b29f-219d4c6cdadc` emitted `kick_candidate` from 1600-1700 ms at confidence 0.850. Evidence is `ball_speed_px_s=300.04` plus `player_proximity_px=58.96`, source `heuristic.temporal`, frame references 16 and 17, track references 3 and 4, and `needs_review=true`.
+
+The real clip produced no heuristic events. This is expected for a sparse training-field shot and is recorded rather than manufacturing an event.
+
+## Independent review hardening — 2026-08-18
+
+An independent read-only review found no critical issues and eight important issues. Regression-driven fixes now cover atomic start/transition semantics, duplicate-start rejection, bounded admission, background model-init failure persistence, premature decode EOF, recoverable-frame timing preservation, final artifact validation, continuous ball IDs, same-source fusion, source/output/model metadata, track summaries, environment settings, a 30-second fixture, loopback ports, and non-root containers.
+
+Fresh image checks:
+
+- `docker compose build backend ui` succeeded.
+- `docker compose exec -T backend id` returned `uid=1000(app) gid=1000(app)`.
+- `ss` showed 8010/8510 bound only to `127.0.0.1`.
+- Backend and Streamlit health endpoints returned `ok`.
+- Live 30-second upload/start completed in 2.048 seconds, returned four track summaries and one candidate, and served the artifact with HTTP 200.
+- Full post-fix suite: 64 passed in 2.09 seconds with one known non-failing Starlette `TestClient` dependency warning.
+- Post-fix Ruff, Compose configuration, and `git diff --check`: clean.
+- Independent FFprobe of the live artifact: H.264, 640x360, 10/1 FPS, 300 frames, 30.000 seconds.
+- Barrier-based tests prove that a stop before worker entry and a stop at finalization both end as `stopped`, never `failed`.
+- Final rebuilt-image live job `eef77882-63ab-40a1-bed7-f657ca98461b`: completed/100%, 300 frames, zero errors, 2.0998 seconds, one event, four summaries, artifact HTTP 200.
+- Final targeted independent review: no remaining Critical or Important issues; `Ready to merge: Yes`.

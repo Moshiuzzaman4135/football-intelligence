@@ -40,23 +40,35 @@ def fuse_events(events: list[FootballEvent], window_ms: int = 1500) -> list[Foot
 
     fused: list[FootballEvent] = []
     for group in groups:
-        best = max(group, key=lambda item: item.confidence)
+        independent: list[FootballEvent] = []
+        used_sources: set[str] = set()
+        for candidate in sorted(group, key=lambda item: item.confidence, reverse=True):
+            candidate_sources = set(candidate.source)
+            if candidate_sources & used_sources:
+                continue
+            independent.append(candidate)
+            used_sources.update(candidate_sources)
+        best = max(independent, key=lambda item: item.confidence)
         fused.append(
             FootballEvent(
                 job_id=best.job_id,
                 event_type=best.event_type,
-                start_ms=min(item.start_ms for item in group),
-                end_ms=max(item.end_ms for item in group),
+                start_ms=min(item.start_ms for item in independent),
+                end_ms=max(item.end_ms for item in independent),
                 game_time=best.game_time,
                 team=best.team,
                 player=best.player,
                 description=best.description,
-                confidence=1 - prod(1 - item.confidence for item in group),
-                evidence=[evidence for item in group for evidence in item.evidence],
-                source=sorted({source for item in group for source in item.source}),
-                track_ids=sorted({track_id for item in group for track_id in item.track_ids}),
-                frame_refs=sorted({frame for item in group for frame in item.frame_refs}),
-                needs_review=any(item.needs_review for item in group),
+                confidence=1 - prod(1 - item.confidence for item in independent),
+                evidence=[evidence for item in independent for evidence in item.evidence],
+                source=sorted({source for item in independent for source in item.source}),
+                track_ids=sorted(
+                    {track_id for item in independent for track_id in item.track_ids}
+                ),
+                frame_refs=sorted(
+                    {frame for item in independent for frame in item.frame_refs}
+                ),
+                needs_review=any(item.needs_review for item in independent),
             )
         )
     return fused
@@ -69,7 +81,9 @@ class TemporalEventEngine:
         self.proximity_px = proximity_px
         self._previous_ball: TrackObservation | None = None
         self._previous_near_player: TrackObservation | None = None
+        self._previous_proximity_px: float | None = None
         self._events: list[FootballEvent] = []
+        self._drain_index = 0
         self._last_kick_ms = -10_000
 
     def observe(self, tracks: list[TrackObservation]) -> None:
@@ -86,7 +100,9 @@ class TemporalEventEngine:
                 speed = displacement * 1000 / elapsed_ms
                 if (
                     speed >= self.kick_speed_px_s
+                    and ball.track_id == self._previous_ball.track_id
                     and self._previous_near_player is not None
+                    and self._previous_proximity_px is not None
                     and ball.timestamp_ms - self._last_kick_ms > 750
                 ):
                     confidence = min(0.95, 0.55 + speed / (4 * self.kick_speed_px_s))
@@ -96,7 +112,7 @@ class TemporalEventEngine:
                             event_type="kick_candidate",
                             start_ms=self._previous_ball.timestamp_ms,
                             end_ms=ball.timestamp_ms,
-                            description="Ball accelerated near a tracked player",
+                            description="Ball moved rapidly near a tracked player",
                             confidence=confidence,
                             evidence=[
                                 EventEvidence(
@@ -104,7 +120,13 @@ class TemporalEventEngine:
                                     value=round(speed, 2),
                                     confidence=confidence,
                                     frame_refs=[self._previous_ball.frame_index, ball.frame_index],
-                                )
+                                ),
+                                EventEvidence(
+                                    kind="player_proximity_px",
+                                    value=round(self._previous_proximity_px, 2),
+                                    confidence=confidence,
+                                    frame_refs=[self._previous_ball.frame_index],
+                                ),
                             ],
                             source=["heuristic.temporal"],
                             track_ids=[self._previous_near_player.track_id, ball.track_id],
@@ -121,9 +143,24 @@ class TemporalEventEngine:
         )
         if (
             self._previous_near_player is not None
-            and dist(self._previous_near_player.bbox.center, ball.bbox.center) > self.proximity_px
+            and (
+                proximity := dist(
+                    self._previous_near_player.bbox.center, ball.bbox.center
+                )
+            )
+            > self.proximity_px
         ):
             self._previous_near_player = None
+            self._previous_proximity_px = None
+        elif self._previous_near_player is not None:
+            self._previous_proximity_px = proximity
+        else:
+            self._previous_proximity_px = None
 
     def finalize(self) -> list[FootballEvent]:
         return deduplicate_events(self._events)
+
+    def drain_candidates(self) -> list[FootballEvent]:
+        candidates = self._events[self._drain_index :]
+        self._drain_index = len(self._events)
+        return candidates

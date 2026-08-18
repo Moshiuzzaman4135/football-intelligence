@@ -61,6 +61,17 @@ def test_fusion_combines_confidence_and_preserves_producers():
     assert fused[0].end_ms == 1500
 
 
+def test_fusion_does_not_treat_same_source_as_independent_evidence():
+    weak = make_event(1000, 0.6, "heuristic.temporal")
+    strong = make_event(1300, 0.75, "heuristic.temporal")
+
+    fused = fuse_events([weak, strong], window_ms=1000)
+
+    assert len(fused) == 1
+    assert fused[0].confidence == 0.75
+    assert len(fused[0].evidence) == 1
+
+
 def test_temporal_engine_requires_motion_across_frames_for_kick_candidate():
     engine = TemporalEventEngine(job_id="job-1", kick_speed_px_s=150)
     engine.observe(
@@ -103,3 +114,40 @@ def test_static_single_frame_cannot_create_kick_candidate():
     )
 
     assert engine.finalize() == []
+
+
+def test_ball_track_switch_cannot_create_false_kick_candidate():
+    engine = TemporalEventEngine(job_id="job-1", kick_speed_px_s=150)
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 0, 0),
+            observation(9, "ball", (120, 120), 0, 0),
+        ]
+    )
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 100, 1),
+            observation(10, "ball", (170, 120), 100, 1),
+        ]
+    )
+
+    assert engine.finalize() == []
+
+
+def test_candidate_drain_emits_each_raw_event_once():
+    engine = TemporalEventEngine(job_id="job-1", kick_speed_px_s=150)
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 0, 0),
+            observation(9, "ball", (120, 120), 0, 0),
+        ]
+    )
+    engine.observe(
+        [
+            observation(1, "player", (100, 100), 100, 1),
+            observation(9, "ball", (170, 120), 100, 1),
+        ]
+    )
+
+    assert len(engine.drain_candidates()) == 1
+    assert engine.drain_candidates() == []

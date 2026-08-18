@@ -27,10 +27,10 @@
 
 **Interfaces:** produces Python package `football_intelligence`, settings derived from `FOOTBALL_*`, and `pytest`/`ruff` commands used by every task.
 
-- [ ] Add package metadata with a Python `>=3.11,<3.13` constraint, core and optional `ml`/`dev` dependencies.
-- [ ] Build the CPU image and run `python -c 'import football_intelligence'` to prove the runtime imports.
-- [ ] Record exact local/remote compute observations and dependency decisions.
-- [ ] Commit `chore: initialize football intelligence harness` after verification.
+- [x] Add package metadata with a Python `>=3.11,<3.13` constraint, core and optional `ml`/`dev` dependencies.
+- [x] Build the CPU image and run `python -c 'import football_intelligence'` to prove the runtime imports.
+- [x] Record exact local/remote compute observations and dependency decisions.
+- [x] Commit `chore: initialize football intelligence harness` after verification.
 
 ### Task 2: Domain schemas and timebase (TDD)
 
@@ -38,10 +38,10 @@
 
 **Interfaces:** `frame_to_ms(frame_index: int, fps: float) -> int`; `Detection`, `TrackObservation`, `EventEvidence`, `FootballEvent`, `JobRecord`, and `VideoMetadata` Pydantic models.
 
-- [ ] Write literal expectations for 25 FPS conversion and invalid FPS; run tests and observe missing-module failures.
-- [ ] Write schema tests that reject invalid boxes/confidence/timestamp ordering and accept the normalized examples; observe failure.
-- [ ] Implement minimal validated models/conversion and rerun focused then full tests.
-- [ ] Commit `feat: add normalized football intelligence domain`.
+- [x] Write literal expectations for 25 FPS conversion and invalid FPS; run tests and observe missing-module failures.
+- [x] Write schema tests that reject invalid boxes/confidence/timestamp ordering and accept the normalized examples; observe failure.
+- [x] Implement minimal validated models/conversion and rerun focused then full tests.
+- [x] Commit `feat: add normalized football intelligence domain`.
 
 ### Task 3: Job storage and state machine (TDD)
 
@@ -49,9 +49,9 @@
 
 **Interfaces:** `JobRepository.create/get/list/transition/update_progress/save_events/save_tracks`; allowed states `created -> running -> completed|failed|stopped` and `running -> stopping -> stopped`.
 
-- [ ] Test creation defaults, legal transitions, illegal terminal transitions, progress monotonicity, and event/track round trips against temporary SQLite.
-- [ ] Observe expected failures, implement SQLite tables/repository, and rerun focused/full tests.
-- [ ] Commit `feat: persist jobs events and track summaries`.
+- [x] Test creation defaults, legal transitions, illegal terminal transitions, progress monotonicity, and event/track round trips against temporary SQLite.
+- [x] Observe expected failures, implement SQLite tables/repository, and rerun focused/full tests.
+- [ ] Commit `feat: persist jobs events and track summaries` (included in final vertical-slice commit).
 
 ### Task 4: Semantic bus and event engine (TDD)
 
@@ -59,10 +59,10 @@
 
 **Interfaces:** `EventBus.publish(topic, payload) -> EventEnvelope`; `deduplicate_events(events, window_ms)`; `fuse_events(events, window_ms)`; `TemporalEventEngine.observe(tracks)` and `.finalize()`.
 
-- [ ] Test subscriber isolation and semantic envelope timestamps.
-- [ ] Test candidate validation, temporal kick/pass/shot/ball-out heuristics with hand-authored observations, deduplication, and evidence-preserving fusion.
-- [ ] Observe failures, implement minimum temporal rules, and rerun focused/full tests.
-- [ ] Commit `feat: add temporal event candidates and fusion`.
+- [x] Test subscriber isolation and semantic envelope timestamps.
+- [x] Test continuous-track temporal kick heuristics with hand-authored observations, deduplication, and independent-source evidence fusion. Pass/shot/ball-out remain later milestones.
+- [x] Observe failures, implement the minimum honest temporal rule, and rerun focused/full tests.
+- [ ] Commit `feat: add temporal event candidates and fusion` (included in final vertical-slice commit).
 
 ### Task 5: Video, detector, and tracker adapters (TDD)
 
@@ -70,10 +70,10 @@
 
 **Interfaces:** `probe_video(path) -> VideoMetadata`; `iter_frames(path)`; `Detector.detect(frame, frame_index, timestamp_ms)`; `Tracker.update(detections, frame_index, timestamp_ms)`.
 
-- [ ] Generate a small moving-object MP4 fixture during tests and first prove probe/frame/timestamp expectations fail.
-- [ ] Test normalized color detector output and stable/expired IoU tracks with literal boxes.
-- [ ] Implement OpenCV source handling, deterministic fallback, IoU assignment, and optional lazy Ultralytics adapter; rerun tests.
-- [ ] Commit `feat: add video detection and tracking adapters`.
+- [x] Generate a small moving-object MP4 fixture during tests and first prove probe/frame/timestamp expectations fail.
+- [x] Test normalized color detector output and stable/expired IoU tracks with literal boxes.
+- [x] Implement OpenCV source handling, deterministic fallback, IoU assignment, and optional lazy Ultralytics adapter; rerun tests.
+- [ ] Commit `feat: add video detection and tracking adapters` (included in final vertical-slice commit).
 
 ### Task 6: Overlay and end-to-end pipeline (TDD)
 
@@ -81,10 +81,10 @@
 
 **Interfaces:** `draw_overlay(frame, tracks, events, timestamp_ms, trails) -> ndarray`; `Pipeline.run(job_id) -> JobRecord`; CLI `football-intelligence process VIDEO`.
 
-- [ ] Test pixel-visible overlays and a full deterministic clip run producing completed metadata, tracks/events, and output.
-- [ ] Observe failure, implement orchestration, progress/stop/fault handling, temporary writer, FFmpeg H.264 finalization, metrics, and semantic bus publications.
-- [ ] Rerun integration test and validate output via `ffprobe` for codec, dimensions, FPS, duration, and frame readability.
-- [ ] Commit `feat: generate annotated football video`.
+- [x] Test pixel-visible overlays and a full deterministic clip run producing completed metadata, tracks/events, and output.
+- [x] Observe failure, implement orchestration, progress/stop/fault handling, temporary writer, FFmpeg H.264 finalization, metrics, and semantic bus publications.
+- [x] Rerun integration test and validate output for H.264 codec, dimensions, FPS, duration, frame count, and readability.
+- [ ] Commit `feat: generate annotated football video` (included in final vertical-slice commit).
 
 ### Task 7: FastAPI lifecycle and media API (TDD)
 
@@ -92,9 +92,9 @@
 
 **Interfaces:** `POST /jobs/upload`, `POST /jobs/{id}/start`, `POST /jobs/{id}/stop`, `GET /jobs`, `/jobs/{id}`, `/events`, `/tracks`, `/annotated-video`, `/status`, and `GET /health`.
 
-- [ ] Test health, upload/job creation, invalid extension/path protection, start/status, stop, event/track JSON, missing IDs, and media response against a temporary app.
-- [ ] Observe failures, implement dependency-injected app state and bounded background executor, then rerun focused/full tests.
-- [ ] Commit `feat: expose football processing API`.
+- [x] Test health, upload/job creation, invalid extension/path protection, atomic start/status, stop, event/track JSON, missing IDs, model-init failure, admission backpressure, and media response against a temporary app.
+- [x] Observe failures, implement dependency-injected app state and bounded background executor, then rerun focused/full tests.
+- [ ] Commit `feat: expose football processing API` (included in final vertical-slice commit).
 
 ### Task 8: Streamlit showcase
 
@@ -102,10 +102,10 @@
 
 **Interfaces:** UI API client functions, confidence labels, evidence formatting, upload/start/poll/video/timeline panels.
 
-- [ ] Test pure response normalization and confidence/evidence formatting; observe missing-helper failure.
-- [ ] Implement minimal UI and polling without duplicating backend domain logic.
-- [ ] Start Streamlit headlessly, fetch its health endpoint, and record result.
-- [ ] Commit `feat: add event timeline demo`.
+- [x] Test pure confidence/evidence formatting; observe missing-helper failure.
+- [x] Implement the minimal UI without duplicating backend domain logic; manual refresh is documented.
+- [x] Start Streamlit headlessly, fetch its health endpoint, and record result.
+- [ ] Commit `feat: add event timeline demo` (included in final vertical-slice commit).
 
 ### Task 9: Real fixture and selected ML path
 
@@ -113,11 +113,11 @@
 
 **Interfaces:** documented download/checksum command and `FOOTBALL_DETECTOR=ultralytics` model selection.
 
-- [ ] Acquire a 30-120 second legally reusable football clip and document source/license/checksum.
-- [ ] Verify local native or Docker CUDA; test YOLO nano on the local GPU when compatible, otherwise CPU.
-- [ ] Process the real clip, inspect representative frames, measure detector/overlay/total FPS and VRAM, and record honest results.
-- [ ] Compare a larger/football-specific model remotely only if it adds clear value and storage permits.
-- [ ] Commit `test: validate real football video pipeline`.
+- [x] Provide a generated 30-second primary fixture and document a separate legal 17.44-second Pexels real-footage evaluation clip with source/license/checksum.
+- [x] Verify Docker CUDA and run YOLO11n on the local RTX 3050.
+- [x] Process the real clip, inspect representative frames, and measure detector/overlay/total FPS. Peak VRAM was not sampled and is explicitly not claimed.
+- [x] Defer the larger remote model because local YOLO was sufficient for the vertical slice; record the decision.
+- [ ] Commit `test: validate real football video pipeline` (included in final vertical-slice commit).
 
 ### Task 10: Final packaging and publication
 
@@ -125,7 +125,7 @@
 
 **Interfaces:** fresh engineer can follow `Demo in 5 Minutes` without reading source.
 
-- [ ] Run full tests, Ruff, Docker build, API/UI health, deterministic CLI demo, real-video demo, and ffprobe checks from fresh commands.
-- [ ] Reconcile all 20 acceptance criteria and record gaps as limitations rather than silently weakening them.
-- [ ] Inspect `git diff --check`, `git status`, and recent commits; perform final code review.
+- [x] Run full tests, Ruff, Docker build, API/UI health, deterministic CLI/live demo, real-video model run, and ffprobe checks from fresh commands.
+- [x] Reconcile all 20 acceptance criteria and record gaps as limitations rather than silently weakening them.
+- [x] Inspect `git diff --check`, `git status`, and recent commits; perform final independent code review.
 - [ ] Create the GitHub repository if absent, push only this repository's `main` branch, verify remote/commit, and record URL.

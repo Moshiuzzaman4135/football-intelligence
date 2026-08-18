@@ -7,7 +7,10 @@ from football_intelligence.domain import (
     EventEvidence,
     FootballEvent,
     JobStatus,
+    ModelMetadata,
     TrackObservation,
+    TrackSummary,
+    VideoMetadata,
 )
 from football_intelligence.storage import InvalidJobTransition, JobRepository
 
@@ -35,6 +38,20 @@ def test_job_state_machine_allows_normal_completion(repository):
     assert running.status is JobStatus.RUNNING
     assert completed.status is JobStatus.COMPLETED
     assert completed.progress == 100
+
+
+def test_atomic_completion_honors_a_winning_stop_request(repository):
+    job = repository.create("/clips/match.mp4", "match.mp4")
+    repository.transition(job.id, JobStatus.RUNNING)
+    repository.transition(job.id, JobStatus.STOPPING)
+
+    stopped = repository.complete_or_stop(
+        job.id, output_path="/outputs/match.mp4", metrics={"frames": 10}
+    )
+
+    assert stopped.status is JobStatus.STOPPED
+    assert stopped.progress < 100
+    assert stopped.output_path is None
 
 
 def test_terminal_job_cannot_be_restarted(repository):
@@ -84,3 +101,42 @@ def test_events_and_tracks_round_trip_as_normalized_models(repository):
     assert repository.get_events(job.id) == [event]
     assert repository.get_tracks(job.id) == [track]
 
+
+def test_job_media_model_metadata_and_track_summaries_round_trip(repository):
+    job = repository.create("/clips/match.mp4", "match.mp4")
+    source = VideoMetadata(
+        source_path="/clips/match.mp4",
+        width=1920,
+        height=1080,
+        fps=25,
+        frame_count=250,
+        duration_ms=10_000,
+        codec="h264",
+    )
+    output = source.model_copy(update={"source_path": "/outputs/annotated.mp4"})
+    model = ModelMetadata(
+        detector="ultralytics",
+        model_name="yolo11n.pt",
+        device="cuda:0",
+        framework="ultralytics",
+    )
+    summary = TrackSummary(
+        track_id=2,
+        object_class="ball",
+        start_ms=100,
+        end_ms=900,
+        first_frame=3,
+        last_frame=23,
+        observation_count=12,
+        mean_confidence=0.81,
+        max_confidence=0.94,
+    )
+
+    repository.save_job_metadata(job.id, source=source, output=output, model=model)
+    repository.save_track_summaries(job.id, [summary])
+
+    persisted = repository.get(job.id)
+    assert persisted.metadata.source == source
+    assert persisted.metadata.output == output
+    assert persisted.metadata.model == model
+    assert repository.get_track_summaries(job.id) == [summary]
