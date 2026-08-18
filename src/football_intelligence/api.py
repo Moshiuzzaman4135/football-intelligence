@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from football_intelligence.bus import EventBus
 from football_intelligence.detection.factory import build_detector
 from football_intelligence.domain import JobRecord, JobStatus
+from football_intelligence.persistence import JobStore
 from football_intelligence.pipeline import Pipeline
 from football_intelligence.settings import Settings
 from football_intelligence.storage import InvalidJobTransition, JobNotFound, JobRepository
@@ -25,7 +26,7 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 def create_app(
     *,
-    repository: JobRepository,
+    repository: JobStore,
     data_root: str | Path,
     pipeline_factory: Callable[[], Any] | None = None,
     settings: Settings | None = None,

@@ -19,7 +19,7 @@ from football_intelligence.domain import (
 )
 from football_intelligence.events import TemporalEventEngine, fuse_events
 from football_intelligence.overlay import draw_overlay
-from football_intelligence.storage import JobRepository
+from football_intelligence.persistence import JobStore
 from football_intelligence.tracking.base import Tracker
 from football_intelligence.tracking.summary import summarize_tracks
 from football_intelligence.video import iter_frames, probe_video
@@ -31,7 +31,7 @@ class Pipeline:
     def __init__(
         self,
         *,
-        repository: JobRepository,
+        repository: JobStore,
         detector: Detector,
         tracker: Tracker,
         output_dir: str | Path,

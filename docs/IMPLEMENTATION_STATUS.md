@@ -2,11 +2,11 @@
 
 ## LAST VERIFIED STATE
 
-The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Task 1 added Pydantic contracts for stages, scoreboard/calibration observations, uploads, artifacts, reviews, model manifests, event metadata, 150-minute input and 1080p/25-FPS proxy metadata, and deterministic 120-second chunks with five-second overlap; the protected suite is now 89 passing tests.
+The mandatory M0-M8 vertical slice is implemented and has run both through the CLI and the hardened live Docker API/UI stack. A deterministic 30-second fixture produced detection/tracking overlays, compact track summaries, persisted media/model metadata, one continuous-track evidence-backed kick candidate, and a browser-playable H.264 MP4. A downloaded 17.44-second real football clip completed through both the degraded detector and actual YOLO11n on the local RTX 3050. The latest API upload/start reached completed/100%, events and summaries returned normalized JSON, and the artifact returned HTTP 200. Backend/UI run as UID 1000 on loopback ports 8010/8510. Full-match Tasks 1-2 now provide normalized domain/chunk contracts plus durable SQLAlchemy job/stage stores, compare-and-set versions, worker leases, monotonic checkpoints, retry limits, idempotent completion, reversible Alembic migrations, and a read-only/repeatable importer for the original SQLite repository. The protected suite is now 103 passing tests.
 
 ## CURRENT MILESTONE
 
-Full-match production expansion Task 1 is complete: domain contracts and chunk planning. The published M0-M8 vertical slice remains the protected regression baseline.
+Full-match production expansion Task 2 is complete: durable stage state, SQLAlchemy repositories, legacy import, and the initial production migration. The published M0-M8 vertical slice remains the protected regression baseline.
 
 ## COMPLETED MILESTONES
 
@@ -20,6 +20,7 @@ Full-match production expansion Task 1 is complete: domain contracts and chunk p
 - M7 SQLite persistence, semantic in-process bus, background job API, progress, stop, tracks/events/artifacts.
 - M8 Streamlit upload, progress, annotated player, metrics, and evidence timeline.
 - Full-match Task 1 normalized domain contracts and deterministic chunk planning.
+- Full-match Task 2 durable SQLAlchemy job/stage persistence, compare-and-set lifecycle operations, Alembic schema, protocol migration, and read-only legacy SQLite import.
 
 ## CURRENT WORK
 
@@ -27,15 +28,15 @@ Executing `docs/superpowers/plans/2026-08-18-full-match-production.md` on branch
 
 ## LAST SUCCESSFUL COMMAND
 
-`docker compose run --rm --no-deps -v "$PWD:/app" backend pytest -q` completed with 89 passed in 2.16 seconds and one known non-failing Starlette `TestClient` deprecation warning.
+`docker compose run --rm --no-deps -v "$PWD:/app" backend pytest -q` completed with 103 passed in 2.80 seconds and one known non-failing Starlette `TestClient` deprecation warning.
 
 ## NEXT EXACT ACTION
 
-Begin Task 2 by writing failing tests for durable full-match stage state, compare-and-set persistence, and migration behavior.
+Begin Task 3 by writing failing tests for 16 MiB multipart validation, quota/ownership/checksum enforcement, resume listing, expiry, abort cleanup, and job creation only after successful upload completion.
 
 ## FILES MODIFIED
 
-Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Task 1 added full-match domain contracts, an explicit stage transition helper, a deterministic chunk planner, and focused contract/planning tests.
+Implemented the video, detector, tracker/summary, overlay, pipeline, settings, API, UI, worker, CLI, and demo-fixture modules; added integration/unit tests, atomic lifecycle/backpressure, media integrity checks, non-root Docker hardening, and refreshed README/harness documentation. Task 1 added full-match domain contracts, an explicit stage transition helper, a deterministic chunk planner, and focused contract/planning tests. Task 2 added focused persistence protocols/models/repositories/stage operations, Alembic configuration and initial migration, safe legacy import, PostgreSQL runtime dependencies, and migration/concurrency/import tests while retaining `storage.py` unchanged.
 
 ## MODELS INSTALLED
 
